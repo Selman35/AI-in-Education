@@ -313,46 +313,44 @@ export class FocusChangeAutoSaveTracker {
   }
 
   /**
-   * Compute a human‑readable location string for the current change.
+   * Return the same positional location format for every notebook event.
    */
+  private getCellLocation(widget: Widget, cellIndex: number): string {
+    const notebookPanel = this._notebookTracker.find(p => p.id === widget.id);
+    const cells = notebookPanel?.content.model?.cells;
+    const activeCell = cells?.get(cellIndex);
+    if (!activeCell) {
+      return '';
+    }
+
+    // One notebook-wide position keeps all event types (including execute)
+    // on the same identifier and avoids a code-cell/markdown-cell collision.
+    return `[cell ${cellIndex + 1}]`;
+  }
+
   private getChangeLocation(widget: Widget): string {
     const notebookPanel = this._notebookTracker.find(p => p.id === widget.id);
     if (!notebookPanel) {
       return '';
     }
     const notebook = notebookPanel.content;
-    const activeCellIndex = notebook.activeCellIndex;
-    const activeCell = notebook.model?.cells.get(activeCellIndex);
-
-    if (!activeCell) {
-      return '';
-    }
-
-    if (activeCell.type === 'markdown') {
-      return '[markdown cell]';
-    }
-
-    if (activeCell.type === 'code') {
-      // count up to current code cell
-      let codeCellNumber = 0;
-      for (let i = 0; i <= activeCellIndex; i++) {
-        if (notebook.model?.cells.get(i)?.type === 'code') {
-          codeCellNumber++;
-        }
-      }
-      return `[code cell ${codeCellNumber}]`;
-    }
-
-    return '';
+    return this.getCellLocation(widget, notebook.activeCellIndex);
   }
 
   public async executionEventLogger(success: boolean, cell: Cell): Promise<void> {
     const widget = this._shell.currentWidget!;
     const context = this._docManager.contextForWidget(widget);
     if (!context) { return; }
-    // Use Jupyter's stable cell ID. Logging the cell-order metadata object here
-    // previously produced "[object Object]", which could not be analysed per cell.
-    const location = `[cell ID: ${cell.model.id}]`;
+    const notebookPanel = this._notebookTracker.find(p => p.id === widget.id);
+    const cellIndex = notebookPanel?.content.widgets.findIndex(
+      cellWidget => cellWidget.model.id === cell.model.id
+    );
+    const location = cellIndex === undefined || cellIndex < 0
+      ? ''
+      : this.getCellLocation(widget, cellIndex);
+    if (!location) {
+      return;
+    }
     const timestamp = new Date().toISOString();
     const status = success ? 'success' : 'error';
 

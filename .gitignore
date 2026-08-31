@@ -1,4 +1,7 @@
 node_modules/
+.yarn/
+.pnp.cjs
+.pnp.loader.mjs
 lib/
 *.log
 internal_diff_logs/
@@ -10,3 +13,8 @@ __pycache__/
 tsconfig.tsbuildinfo
 .DS_Store
 jupyterlab_autosave_on_focus_change/labextension/
+jupyterlab_autosave_on_focus_change/_version.py
+
+# Local notebooks used for manual extension testing
+Untitled1.ipynb
+trial.ipynb
