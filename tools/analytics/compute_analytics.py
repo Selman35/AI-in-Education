@@ -7,6 +7,11 @@ Calculates the following metrics per notebook log (one row per notebook):
 - execution_events_count: number of execute events
 - execution_status_success: count of execute events with status success
 - execution_status_error: count of execute events with status error
+- added_characters: characters added across saved diffs
+- removed_characters: characters removed across saved diffs
+- net_character_change: added characters minus removed characters
+- added_lines: number of added diff lines
+- removed_lines: number of removed diff lines
 Additionally, for each distinct cell seen in the logs, the script creates column groups
 using a readable label (for example, ``cell_1``):
   cell_1_total_duration
@@ -203,6 +208,34 @@ def compute_execution_stats(df: pd.DataFrame):
     error = exec_df[exec_df.status == "error"].shape[0]
     return total_exec, success, error
 
+
+def compute_change_stats(path: str):
+    """Count the volume of saved additions and removals in a change log.
+
+    Diff body lines begin with ``+ `` or ``- ``. The prefix is excluded from the
+    character count; all remaining logged characters are counted exactly as they
+    appear in the diff (including JSON punctuation when present).
+    """
+    added_characters = removed_characters = 0
+    added_lines = removed_lines = 0
+
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("+ "):
+                added_lines += 1
+                added_characters += len(line[2:].rstrip("\n"))
+            elif line.startswith("- "):
+                removed_lines += 1
+                removed_characters += len(line[2:].rstrip("\n"))
+
+    return {
+        "added_characters": added_characters,
+        "removed_characters": removed_characters,
+        "net_character_change": added_characters - removed_characters,
+        "added_lines": added_lines,
+        "removed_lines": removed_lines,
+    }
+
 def compute_per_cell_metrics(df: pd.DataFrame):
     """
     For each non-null cell, compute the same group of metrics but restricted to that cell's events.
@@ -297,6 +330,7 @@ def process_folder(folder: str):
         row["execution_events_count"] = exec_total
         row["execution_status_success"] = exec_success
         row["execution_status_error"] = exec_error
+        row.update(compute_change_stats(path))
 
         # Per-cell
         cell_metrics = compute_per_cell_metrics(df)
@@ -354,7 +388,12 @@ def process_folder(folder: str):
         "clipboard_lengths",
         "execution_events_count",
         "execution_status_success",
-        "execution_status_error"
+        "execution_status_error",
+        "added_characters",
+        "removed_characters",
+        "net_character_change",
+        "added_lines",
+        "removed_lines",
     ]
     cell_cols = [c for c in df_out.columns if c not in overall_cols]
     df_out = df_out[overall_cols + sorted(cell_cols)]
