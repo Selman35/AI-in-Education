@@ -324,6 +324,7 @@ def process_folder(folder: str):
         row["total_working_duration"] = compute_working_duration(df)
         total_cb, cb_lengths = compute_clipboard_events(df)
         row["total_clipboard_events"] = total_cb
+        
         # store clipboard lengths as JSON string to keep as single CSV cell
         row["clipboard_lengths"] = json.dumps(cb_lengths)
         exec_total, exec_success, exec_error = compute_execution_stats(df)
