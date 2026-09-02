@@ -78,6 +78,21 @@ const extension: JupyterFrontEndPlugin<void> = {
       }
     }, true);
 
+    // Capture actual source edits for idle-time analytics. The tracker debounces
+    // these events so a long typing sequence does not create one log line per key.
+    document.addEventListener('input', function(){
+      void focusSaveTracker.editEventLogger();
+    }, true);
+
+    const logAssignmentPresence = (isActive: boolean) => {
+      void focusSaveTracker.assignmentPresenceEventLogger(isActive);
+    };
+    window.addEventListener('focus', () => logAssignmentPresence(true));
+    window.addEventListener('blur', () => logAssignmentPresence(false));
+    document.addEventListener('visibilitychange', () => {
+      logAssignmentPresence(document.visibilityState === 'visible' && document.hasFocus());
+    });
+
     NotebookActions.executed.connect((_, args) => {
       focusSaveTracker.executionEventLogger(args.success, args.cell);
     });

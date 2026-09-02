@@ -25,6 +25,13 @@
       "title": "Autosave notebook on cell focus change",
       "description": "Whether to autosave notebook on cell focus change.",
       "default": false
+    },
+    "autosaveIntervalSeconds": {
+      "type": "number",
+      "title": "Periodic autosave interval (seconds)",
+      "description": "Use the normal focus-change save and logging path for dirty, non-excluded documents at this interval. Set to 0 to disable periodic autosave.",
+      "default": 30,
+      "minimum": 0
     }
   }
 }

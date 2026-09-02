@@ -18,6 +18,8 @@ export interface IFocusChangeAutoSaveSettings {
   exclude: string[];
   /** Whether or not to save when cell focus changed. */
   saveOnCellFocusChange: boolean;
+  /** Seconds between periodic saves; zero disables periodic saves. */
+  autosaveIntervalSeconds: number;
 }
 
 /**
@@ -77,7 +79,14 @@ export class FocusChangeAutoSaveSettings {
     const exclude = setting.get('exclude').composite as string[];
     const saveOnCellFocusChange = setting.get('saveOnCellFocusChange')
       .composite as boolean;
-    return { active: this._active, exclude, saveOnCellFocusChange };
+    const autosaveIntervalSeconds = setting.get('autosaveIntervalSeconds')
+      .composite as number;
+    return {
+      active: this._active,
+      exclude,
+      saveOnCellFocusChange,
+      autosaveIntervalSeconds
+    };
   }
 
   /**

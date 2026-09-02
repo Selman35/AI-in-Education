@@ -64,6 +64,8 @@ export class FocusChangeAutoSaveTracker {
   private _operationQueues = new Map<string, Promise<void>>();
   private _lastFocusedLocation = new Map<string, string>();
   private _cellOrder = new Map<string, Map<string, { type: 'code' | 'markdown'; ord: number }>>();
+  private _periodicSaveTimer: number | undefined;
+  private _lastEditLogTime = new Map<string, number>();
 
   /**
    * Initialization of FocusChangeAutoSaveTracker.
@@ -312,6 +314,55 @@ export class FocusChangeAutoSaveTracker {
     void this.logEvent(logEntry, context);
   }
 
+  /** Log a debounced source edit as meaningful student activity. */
+  public async editEventLogger(): Promise<void> {
+    const widget = this._shell.currentWidget;
+    if (!widget) {
+      return;
+    }
+
+    const context = this._docManager.contextForWidget(widget);
+    if (!context || context.isDisposed) {
+      return;
+    }
+
+    const location = this.getChangeLocation(widget);
+    if (!location) {
+      return;
+    }
+
+    const now = Date.now();
+    const key = `${context.path}:${location}`;
+    const previous = this._lastEditLogTime.get(key) ?? 0;
+    if (now - previous < 2000) {
+      return;
+    }
+    this._lastEditLogTime.set(key, now);
+
+    const timestamp = new Date(now).toISOString();
+    const logEntry = `[${timestamp}][edit]${location}\n`;
+    await this.queueOperation(context.path, () => this.logEvent(logEntry, context));
+  }
+
+  /** Log whether the JupyterLab tab/window is available for student activity. */
+  public async assignmentPresenceEventLogger(isActive: boolean): Promise<void> {
+    const widget = this._shell.currentWidget;
+    if (!widget) {
+      return;
+    }
+
+    const context = this._docManager.contextForWidget(widget);
+    if (!context || context.isDisposed) {
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const location = this.getChangeLocation(widget);
+    const event = isActive ? 'assignment-active' : 'assignment-inactive';
+    const logEntry = `[${timestamp}][${event}]${location}\n`;
+    await this.queueOperation(context.path, () => this.logEvent(logEntry, context));
+  }
+
   /**
    * Return the same positional location format for every notebook event.
    */
@@ -508,8 +559,29 @@ export class FocusChangeAutoSaveTracker {
   /** Save all document widgets. */
   saveAllDocumentWidgets(): void {
     for (const widget of this.documentWidgets(false)) {
-      void this.saveDocumentWidget(widget);
+      const context = this._docManager.contextForWidget(widget);
+      if (context) {
+        // Use the same queue as focus-out saves so concurrent triggers cannot
+        // write duplicate or out-of-order diff records.
+        void this.queueOperation(context.path, () => this.saveDocumentWidget(widget));
+      }
     }
+  }
+
+  /** Start, replace, or disable the timer that uses the normal save path. */
+  private configurePeriodicAutosave(intervalSeconds: number): void {
+    if (this._periodicSaveTimer !== undefined) {
+      window.clearInterval(this._periodicSaveTimer);
+      this._periodicSaveTimer = undefined;
+    }
+
+    if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
+      return;
+    }
+
+    this._periodicSaveTimer = window.setInterval(() => {
+      this.saveAllDocumentWidgets();
+    }, intervalSeconds * 1000);
   }
 
   /**
@@ -530,10 +602,12 @@ export class FocusChangeAutoSaveTracker {
       this.trackWidgets();
       this._notebookTracker.widgetAdded.connect(this.trackWidgets, this);
       this._editorTracker.widgetAdded.connect(this.trackWidgets, this);
+      this.configurePeriodicAutosave(trackerSetting.autosaveIntervalSeconds);
     } else {
       this.unTrackWidgets();
       this._notebookTracker.widgetAdded.disconnect(this.trackWidgets, this);
       this._editorTracker.widgetAdded.disconnect(this.trackWidgets, this);
+      this.configurePeriodicAutosave(0);
     }
   }
 }
