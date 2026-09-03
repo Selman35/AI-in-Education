@@ -20,6 +20,9 @@ Calculates the following metrics per notebook log (one row per notebook):
 - total_active_session_duration: total span of active-work sessions
 - longest_active_session_duration: longest active-work session span
 - average_active_session_duration: mean active-work session span
+- char_diff_added_characters: exact characters inserted between snapshots
+- char_diff_removed_characters: exact characters deleted between snapshots
+- char_diff_net_character_change: inserted characters minus deleted characters
 Additionally, for each distinct cell seen in the logs, the script creates column groups
 using a readable label (for example, ``cell_1``):
   cell_1_total_duration
@@ -42,6 +45,7 @@ import os
 import glob
 import re
 import json
+import difflib
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -53,6 +57,7 @@ MAPPING_FILENAME = "cell_mapping.csv"
 EXECUTION_SUMMARY_FILENAME = "cell_execution_summary.csv"
 IDLE_EVENTS_FILENAME = "idle_events.csv"
 ACTIVE_SESSIONS_FILENAME = "active_sessions.csv"
+VERSION_LOG_DIRNAME = "versions"
 IDLE_THRESHOLD = 30 * 60.0  # 30 minutes in seconds
 IDLE_ACTIVITY_THRESHOLD = 120.0  # seconds without meaningful student activity
 ACTIVE_SESSION_GAP = 5 * 60.0  # seconds between meaningful actions
@@ -249,6 +254,53 @@ def compute_change_stats(path: str):
         "net_character_change": added_characters - removed_characters,
         "added_lines": added_lines,
         "removed_lines": removed_lines,
+    }
+
+
+def parse_version_snapshots(path: str):
+    """Read source snapshots from a versions log in chronological order."""
+    if not os.path.exists(path):
+        return []
+
+    with open(path, "r", encoding="utf-8") as fh:
+        content = fh.read()
+
+    header_pattern = re.compile(
+        r"^\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]\s+\[cell\s+\d+\]\n",
+        re.MULTILINE,
+    )
+    headers = list(header_pattern.finditer(content))
+    snapshots = []
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(content)
+        snapshot = content[header.end():end]
+        # Each snapshot entry is written with two separator newlines. Remove
+        # only those separators, preserving any newlines in the actual source.
+        if snapshot.endswith("\n\n"):
+            snapshot = snapshot[:-2]
+        snapshots.append(snapshot)
+    return snapshots
+
+
+def compute_character_diff_stats(version_log_path: str):
+    """Count exact character insertions and removals across source snapshots."""
+    snapshots = parse_version_snapshots(version_log_path)
+    previous = ""
+    added = removed = 0
+
+    for current in snapshots:
+        matcher = difflib.SequenceMatcher(a=previous, b=current, autojunk=False)
+        for operation, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+            if operation in ("delete", "replace"):
+                removed += old_end - old_start
+            if operation in ("insert", "replace"):
+                added += new_end - new_start
+        previous = current
+
+    return {
+        "char_diff_added_characters": added,
+        "char_diff_removed_characters": removed,
+        "char_diff_net_character_change": added - removed,
     }
 
 
@@ -504,6 +556,12 @@ def process_folder(folder: str):
         row["execution_status_success"] = exec_success
         row["execution_status_error"] = exec_error
         row.update(compute_change_stats(path))
+        version_path = os.path.join(
+            os.path.dirname(os.path.normpath(folder)),
+            VERSION_LOG_DIRNAME,
+            os.path.basename(path),
+        )
+        row.update(compute_character_diff_stats(version_path))
 
         # Per-cell
         cell_metrics = compute_per_cell_metrics(df)
@@ -588,6 +646,9 @@ def process_folder(folder: str):
         "total_active_session_duration",
         "longest_active_session_duration",
         "average_active_session_duration",
+        "char_diff_added_characters",
+        "char_diff_removed_characters",
+        "char_diff_net_character_change",
     ]
     cell_cols = [c for c in df_out.columns if c not in overall_cols]
     df_out = df_out[overall_cols + sorted(cell_cols)]
