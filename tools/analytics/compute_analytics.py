@@ -92,6 +92,7 @@ def sanitize_cell_id(cell_id: str) -> str:
 def extract_student_name(filepath: str) -> str:
     return os.path.basename(filepath).split(".")[0]
 
+
 def parse_log_file(path: str):
     """
     Parse log lines into a list of events dictionaries with keys:
