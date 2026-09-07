@@ -7,9 +7,6 @@ Calculates the following metrics per notebook log (one row per notebook):
 - execution_events_count: number of execute events
 - execution_status_success: count of execute events with status success
 - execution_status_error: count of execute events with status error
-- added_characters: characters added across saved diffs
-- removed_characters: characters removed across saved diffs
-- net_character_change: added characters minus removed characters
 - added_lines: number of added diff lines
 - removed_lines: number of removed diff lines
 - total_idle_time: time after the idle threshold with no meaningful student action
@@ -259,28 +256,17 @@ def compute_execution_stats(df: pd.DataFrame):
 
 
 def compute_change_stats(path: str):
-    """Count the volume of saved additions and removals in a change log.
-
-    Diff body lines begin with ``+ `` or ``- ``. The prefix is excluded from the
-    character count; all remaining logged characters are counted exactly as they
-    appear in the diff (including JSON punctuation when present).
-    """
-    added_characters = removed_characters = 0
+    """Count added and removed lines in a saved change log."""
     added_lines = removed_lines = 0
 
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             if line.startswith("+ "):
                 added_lines += 1
-                added_characters += len(line[2:].rstrip("\n"))
             elif line.startswith("- "):
                 removed_lines += 1
-                removed_characters += len(line[2:].rstrip("\n"))
 
     return {
-        "added_characters": added_characters,
-        "removed_characters": removed_characters,
-        "net_character_change": added_characters - removed_characters,
         "added_lines": added_lines,
         "removed_lines": removed_lines,
     }
@@ -662,9 +648,6 @@ def process_folder(folder: str):
         "execution_events_count",
         "execution_status_success",
         "execution_status_error",
-        "added_characters",
-        "removed_characters",
-        "net_character_change",
         "added_lines",
         "removed_lines",
         "total_idle_time",

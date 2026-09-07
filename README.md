@@ -137,12 +137,11 @@ This regenerates the reports below:
 
 ### Understanding the main metrics
 
-The report includes both line-based and character-level code-change measures.
-Line measures (`added_lines`, `removed_lines`, `added_characters`, and
-`removed_characters`) describe the saved diff logs. Character-level measures
-(`char_diff_added_characters` and `char_diff_removed_characters`) compare
-successive code snapshots, so a one-character correction is counted as one
-character rather than as a complete line replacement.
+The report includes line-based and character-level code-change measures.
+`added_lines` and `removed_lines` describe the saved diff logs. Character-level
+measures (`char_diff_added_characters` and `char_diff_removed_characters`)
+compare successive code snapshots, so a one-character correction is counted as
+one character rather than as a complete line replacement.
 
 An idle episode starts after 120 seconds without a meaningful action. Editing,
 copying, cutting, pasting, and running a cell are meaningful actions; focus
