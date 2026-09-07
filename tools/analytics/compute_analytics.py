@@ -1,7 +1,7 @@
 """
 Calculates the following metrics per notebook log (one row per notebook):
 - total_duration: seconds between first and last event
-- total_working_duration: total duration minus inactive gaps > 30 minutes (1800s)
+- total_working_duration: observed time between meaningful actions less than 45 seconds apart
 - total_clipboard_events: count of copy+cut+paste
 - clipboard_lengths: JSON list of lengths (integers) for clipboard events in timestamp order
 - execution_events_count: number of execute events
@@ -58,7 +58,7 @@ EXECUTION_SUMMARY_FILENAME = "cell_execution_summary.csv"
 IDLE_EVENTS_FILENAME = "idle_events.csv"
 ACTIVE_SESSIONS_FILENAME = "active_sessions.csv"
 VERSION_LOG_DIRNAME = "versions"
-IDLE_THRESHOLD = 30 * 60.0  # 30 minutes in seconds
+WORKING_ACTIVITY_GAP = 45.0  # maximum seconds between actions counted as active work
 IDLE_ACTIVITY_THRESHOLD = 120.0  # seconds without meaningful student activity
 ACTIVE_SESSION_GAP = 5 * 60.0  # seconds between meaningful actions
 LEGACY_EXECUTION_MATCH_WINDOW = 5.0  # seconds
@@ -200,21 +200,49 @@ def compute_total_duration(df: pd.DataFrame) -> float:
         return 0.0
     return (df.ts.iloc[-1] - df.ts.iloc[0]).total_seconds()
 
-def compute_working_duration(df: pd.DataFrame, idle_threshold: float = IDLE_THRESHOLD) -> float:
-    """
-    Working duration = total span between first and last event minus any gaps > idle_threshold.
+def compute_working_duration(
+    df: pd.DataFrame, activity_gap: float = WORKING_ACTIVITY_GAP
+) -> float:
+    """Estimate active work from closely spaced meaningful student actions.
+
+    Only edits, clipboard actions, and executions are evidence of work. The
+    interval between two such actions is counted only when it is shorter than
+    ``activity_gap`` seconds. Focus events and automatic saves therefore cannot
+    make an inactive period look like work. Assignment-inactive events end the
+    current observation period, so time away from the assignment is excluded.
     """
     if df.empty:
         return 0.0
-    times = df.ts.tolist()
-    total_span = (times[-1] - times[0]).total_seconds()
-    idle = 0.0
-    for t1, t2 in zip(times, times[1:]):
-        gap = (t2 - t1).total_seconds()
-        if gap > idle_threshold:
-            idle += gap
-    working = max(0.0, total_span - idle)
-    return working
+
+    relevant = df[
+        df.event.isin(MEANINGFUL_ACTIVITY_EVENTS | ASSIGNMENT_PRESENCE_EVENTS)
+    ].sort_values("ts")
+    working_duration = 0.0
+    previous_action = None
+    is_assignment_active = True
+
+    for _, event in relevant.iterrows():
+        if event.event == "assignment-inactive":
+            is_assignment_active = False
+            previous_action = None
+            continue
+
+        if event.event == "assignment-active":
+            is_assignment_active = True
+            # Do not count time before the student returned to the assignment.
+            previous_action = None
+            continue
+
+        if not is_assignment_active:
+            continue
+
+        if previous_action is not None:
+            gap = (event.ts - previous_action.ts).total_seconds()
+            if 0 <= gap < activity_gap:
+                working_duration += gap
+        previous_action = event
+
+    return working_duration
 
 def compute_clipboard_events(df: pd.DataFrame):
     cb_df = df[df.event.isin(["copy","cut","paste"])]

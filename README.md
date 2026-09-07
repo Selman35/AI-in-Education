@@ -32,8 +32,11 @@ This extension aims to do the same for jupyterlab as the following setting in VS
 ## Features
 
 - Autosave on focus change
+- Periodic autosave of changed notebooks (30 seconds by default)
 - De-/Activation via Settings Menu
 - File exclusion with glob patterns
+- Per-cell edit, clipboard, and execution logging
+- Analytics for code changes, idle time, active sessions, and cell execution
 
 ## Requirements
 
@@ -44,6 +47,127 @@ This extension aims to do the same for jupyterlab as the following setting in VS
 ```bash
 pip install jupyterlab-autosave-on-focus-change
 ```
+
+## Using this project for notebook analytics
+
+This project builds on the autosave extension to create local analytics from
+student notebook activity. It records events such as edits, cell runs, and
+saved code changes, then turns those logs into CSV reports. The reports are
+intended to help understand how a notebook was worked on; they are not a score
+or an automatic judgement of a student.
+
+### First-time setup with Conda
+
+The following commands create an environment suitable for running and
+developing this project:
+
+```bash
+conda create -n jupyterlab_autosave_on_focus_change-demo \
+  -c conda-forge python=3.10 jupyterlab=4.5 nodejs=20
+conda activate jupyterlab_autosave_on_focus_change-demo
+```
+
+From the root of this repository, install the local Python package, link the
+extension to JupyterLab, build it, and start JupyterLab:
+
+```bash
+export PATH="$CONDA_PREFIX/bin:$PATH"
+pip install -e .
+jupyter labextension develop . --overwrite
+jlpm run build
+jupyter lab
+```
+
+If you change a TypeScript file in `src/`, rebuild with `jlpm run build` and
+refresh the JupyterLab page. Restart JupyterLab if the change does not appear.
+
+### Configure collection
+
+In JupyterLab, open:
+
+`Settings → Settings Editor → Autosave on Focus Change`
+
+For normal data collection, make sure the extension is active and set
+**Periodic autosave interval (seconds)** to `30`. A value of `0` disables
+periodic autosave.
+
+Periodic saving uses the same normal save and logging path as focus-change
+saving. It saves only notebooks with unsaved changes, so an unchanged notebook
+does not create a new snapshot every 30 seconds.
+
+### What is recorded
+
+Events are connected to readable notebook locations such as `cell 1` and
+`cell 2`. The extension records edits, copy/cut/paste events, cell executions
+(including success or error), focus activity, assignment-window activity, and
+saved code changes.
+
+The files are written locally under:
+
+```text
+internal_diff_logs/
+├── changes/   # event logs and generated CSV reports
+└── versions/  # saved source snapshots
+```
+
+These logs can contain student work and activity data. They are ignored by Git,
+but `.gitignore` does not prevent access to them. Configure filesystem and
+Jupyter server permissions if students must not be able to view or modify the
+logs.
+
+### Create the analytics reports
+
+After notebook activity has been recorded, run the following from the
+repository root:
+
+```bash
+conda activate jupyterlab_autosave_on_focus_change-demo
+python tools/analytics/compute_analytics.py internal_diff_logs/changes
+```
+
+This regenerates the reports below:
+
+| File | What it contains |
+| --- | --- |
+| `student_analytics.csv` | One overall analytics row per notebook. |
+| `cell_mapping.csv` | Readable cell labels and their logged references. |
+| `cell_execution_summary.csv` | Execution, success, and error counts for each cell. |
+| `idle_events.csv` | Each detected period of inactivity. |
+| `active_sessions.csv` | Each detected active editing session. |
+
+### Understanding the main metrics
+
+The report includes both line-based and character-level code-change measures.
+Line measures (`added_lines`, `removed_lines`, `added_characters`, and
+`removed_characters`) describe the saved diff logs. Character-level measures
+(`char_diff_added_characters` and `char_diff_removed_characters`) compare
+successive code snapshots, so a one-character correction is counted as one
+character rather than as a complete line replacement.
+
+An idle episode starts after 120 seconds without a meaningful action. Editing,
+copying, cutting, pasting, and running a cell are meaningful actions; focus
+events and automatic saves are not. Only the time after the first 120 seconds
+is counted as idle time. For example, 185 seconds without activity produces
+65 seconds of recorded idle time.
+
+An active editing session contains meaningful actions less than five minutes
+apart. A student leaving the assignment closes the session, and time spent away
+from the assignment is not counted as idle time.
+
+### Quick check
+
+To verify a new installation, create a fresh notebook and:
+
+1. Type code and wait about 35 seconds without changing focus.
+2. Run one successful cell and one cell that produces an error, for example
+   `1 / 0`.
+3. Change one character in a cell and wait for another save.
+4. Leave the notebook visible but untouched for 185 seconds, then edit again.
+5. Run the analytics command and inspect the CSV files in
+   `internal_diff_logs/changes`.
+
+The test should show a periodic save, correct execution results, character
+changes, and an idle event of roughly 65 seconds for the 185-second pause.
 
 ## Contributing
 
