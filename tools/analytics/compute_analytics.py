@@ -29,6 +29,9 @@ using a readable label (for example, ``cell_1``):
   cell_1_exec_count
   cell_1_exec_success
   cell_1_exec_error
+  cell_1_char_diff_added_characters
+  cell_1_char_diff_removed_characters
+  cell_1_char_diff_net_character_change
 
 Output: a single CSV file (student_analytics.csv) where each row is a notebook
 (student), plus ``cell_mapping.csv`` which maps readable labels to stable Jupyter
@@ -55,6 +58,7 @@ EXECUTION_SUMMARY_FILENAME = "cell_execution_summary.csv"
 IDLE_EVENTS_FILENAME = "idle_events.csv"
 ACTIVE_SESSIONS_FILENAME = "active_sessions.csv"
 VERSION_LOG_DIRNAME = "versions"
+CELL_VERSION_LOG_DIRNAME = "cell_versions"
 WORKING_ACTIVITY_GAP = 45.0  # maximum seconds between actions counted as active work
 IDLE_ACTIVITY_THRESHOLD = 120.0  # seconds without meaningful student activity
 ACTIVE_SESSION_GAP = 5 * 60.0  # seconds between meaningful actions
@@ -319,6 +323,85 @@ def compute_character_diff_stats(version_log_path: str):
     }
 
 
+def parse_cell_version_snapshots(path: str):
+    """Read structured per-cell snapshots written by newer extension versions.
+
+    A missing file means that the notebook was recorded before cell-level source
+    snapshots existed, so cell character metrics must remain unavailable.
+    """
+    if not os.path.exists(path):
+        return None
+
+    snapshots = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            cells = record.get("cells")
+            if not isinstance(cells, list):
+                continue
+
+            snapshot = {}
+            for cell in cells:
+                if not isinstance(cell, dict):
+                    continue
+                cell_id = cell.get("cell_id")
+                cell_index = cell.get("cell_index")
+                source = cell.get("source")
+                if not isinstance(cell_id, str) or not isinstance(cell_index, int) or not isinstance(source, str):
+                    continue
+                snapshot[cell_id] = {
+                    "label": f"cell_{cell_index}",
+                    "source": source,
+                }
+            snapshots.append(snapshot)
+    return snapshots
+
+
+def compute_cell_character_diff_stats(cell_version_log_path: str):
+    """Return exact insertion/removal totals for each stable notebook cell.
+
+    Cells are matched by Jupyter's cell ID. A newly added cell is compared with
+    empty content; a removed cell is compared with empty content. This avoids
+    treating an edit to one line as deletion of the entire previous line.
+    """
+    snapshots = parse_cell_version_snapshots(cell_version_log_path)
+    if snapshots is None:
+        return None
+
+    stats = {}
+    previous = {}
+    for current in snapshots:
+        for cell_id in previous.keys() | current.keys():
+            old_cell = previous.get(cell_id, {"source": "", "label": None})
+            new_cell = current.get(cell_id, {"source": "", "label": None})
+            label = new_cell["label"] or old_cell["label"]
+            if label is None:
+                continue
+
+            cell_stats = stats.setdefault(label, {"added": 0, "removed": 0})
+            matcher = difflib.SequenceMatcher(
+                a=old_cell["source"], b=new_cell["source"], autojunk=False
+            )
+            for operation, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+                if operation in ("delete", "replace"):
+                    cell_stats["removed"] += old_end - old_start
+                if operation in ("insert", "replace"):
+                    cell_stats["added"] += new_end - new_start
+        previous = current
+
+    return {
+        label: {
+            "char_diff_added_characters": values["added"],
+            "char_diff_removed_characters": values["removed"],
+            "char_diff_net_character_change": values["added"] - values["removed"],
+        }
+        for label, values in stats.items()
+    }
+
+
 def compute_idle_events(df: pd.DataFrame, cell_labels: dict, threshold: float = IDLE_ACTIVITY_THRESHOLD):
     """Return periods of no meaningful student activity beyond ``threshold``.
 
@@ -577,6 +660,12 @@ def process_folder(folder: str):
             os.path.basename(path),
         )
         row.update(compute_character_diff_stats(version_path))
+        cell_version_path = os.path.join(
+            os.path.dirname(os.path.normpath(folder)),
+            CELL_VERSION_LOG_DIRNAME,
+            os.path.splitext(os.path.basename(path))[0] + ".jsonl",
+        )
+        cell_character_stats = compute_cell_character_diff_stats(cell_version_path)
 
         # Per-cell
         cell_metrics = compute_per_cell_metrics(df)
@@ -599,6 +688,13 @@ def process_folder(folder: str):
                     "success_count": metrics["exec_success"],
                     "error_count": metrics["exec_error"],
                 })
+
+        if cell_character_stats is not None:
+            for label, metrics in cell_character_stats.items():
+                all_cell_keys.add(label)
+                row[f"{label}_char_diff_added_characters"] = metrics["char_diff_added_characters"]
+                row[f"{label}_char_diff_removed_characters"] = metrics["char_diff_removed_characters"]
+                row[f"{label}_char_diff_net_character_change"] = metrics["char_diff_net_character_change"]
 
         idle_by_cell = {}
         for event in idle_events:
@@ -628,6 +724,9 @@ def process_folder(folder: str):
             f"{san}_idle_time",
             f"{san}_idle_count",
             f"{san}_longest_idle_time",
+            f"{san}_char_diff_added_characters",
+            f"{san}_char_diff_removed_characters",
+            f"{san}_char_diff_net_character_change",
         ]
         for c in cols:
             if c not in df_out.columns:
@@ -636,6 +735,10 @@ def process_folder(folder: str):
                     df_out[c] = json.dumps([])
                 elif c.endswith("_clipboard_events") or c.endswith("_exec_count") or c.endswith("_exec_success") or c.endswith("_exec_error") or c.endswith("_idle_count"):
                     df_out[c] = 0
+                elif "_char_diff_" in c:
+                    # Older logs have no structured cell snapshots; blank means
+                    # unavailable rather than a measured value of zero.
+                    df_out[c] = np.nan
                 else:
                     df_out[c] = 0.0
 

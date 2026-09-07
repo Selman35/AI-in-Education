@@ -440,6 +440,7 @@ export class FocusChangeAutoSaveTracker {
     await ensureDirExists('internal_diff_logs');
     await ensureDirExists('internal_diff_logs/changes');
     await ensureDirExists('internal_diff_logs/versions');
+    await ensureDirExists('internal_diff_logs/cell_versions');
 
     if (
       this._excludeMatcher.match(context.path) === false &&
@@ -449,21 +450,37 @@ export class FocusChangeAutoSaveTracker {
       const model = context.model;
       const timestamp = new Date().toISOString();
       let currentContent = '';
+      let currentCellSnapshots: Array<{
+        cell_id: string;
+        cell_index: number;
+        source: string;
+      }> = [];
 
       try {
         // Try to parse as notebook and extract cell sources
         const nb = JSON.parse(model.toString());
         if (Array.isArray(nb.cells)) {
-          currentContent = nb.cells
-            .map((cell: any) => {
+          currentCellSnapshots = nb.cells
+            .map((cell: any, index: number) => {
               if (cell.cell_type === 'code' || cell.cell_type === 'markdown') {
                 const source = Array.isArray(cell.source)
                   ? cell.source.join('')
                   : cell.source ?? '';
-                return source;
+                return {
+                  cell_id: typeof cell.id === 'string' ? cell.id : `position_${index + 1}`,
+                  cell_index: index + 1,
+                  source
+                };
               }
-              return '';
+              return null;
             })
+            .filter((cell: unknown): cell is {
+              cell_id: string;
+              cell_index: number;
+              source: string;
+            } => cell !== null);
+          currentContent = currentCellSnapshots
+            .map(cell => cell.source)
             .join('\n\n');
         }
       } catch {
@@ -503,6 +520,7 @@ export class FocusChangeAutoSaveTracker {
         const safeFileName = context.path.replace(/\//g, '__');
         const internalDiffLogPath = `internal_diff_logs/changes/${safeFileName}.log`;
         const snapshotLogPath = `internal_diff_logs/versions/${safeFileName}.log`;
+        const cellSnapshotLogPath = `internal_diff_logs/cell_versions/${safeFileName}.jsonl`;
         let prevInternalLog = '';
         try {
           const internalLogModel = await this._docManager.services.contents.get(internalDiffLogPath);
@@ -544,6 +562,35 @@ export class FocusChangeAutoSaveTracker {
           });
         } catch (err) {
           console.error('Failed to write snapshot log:', err);
+        }
+
+        // Keep structured cell snapshots separate from the existing human-readable
+        // version log. Analytics can therefore compare a cell only with its own
+        // previous content, rather than mistaking a line edit for a deletion.
+        if (currentCellSnapshots.length > 0) {
+          let previousCellSnapshotLog = '';
+          try {
+            const cellSnapshotLogModel = await this._docManager.services.contents.get(cellSnapshotLogPath);
+            if (cellSnapshotLogModel.format === 'text' && typeof cellSnapshotLogModel.content === 'string') {
+              previousCellSnapshotLog = cellSnapshotLogModel.content;
+            }
+          } catch (err) {
+            console.log('No previous cell snapshot log found:', cellSnapshotLogPath);
+          }
+
+          const cellSnapshotEntry = JSON.stringify({
+            timestamp,
+            cells: currentCellSnapshots
+          });
+          try {
+            await this._docManager.services.contents.save(cellSnapshotLogPath, {
+              type: 'file',
+              format: 'text',
+              content: previousCellSnapshotLog + cellSnapshotEntry + '\n'
+            });
+          } catch (err) {
+            console.error('Failed to write cell snapshot log:', err);
+          }
         }
 
         this._stepCounters.set(context.path, step + 1);

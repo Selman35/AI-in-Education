@@ -141,7 +141,9 @@ The report includes line-based and character-level code-change measures.
 `added_lines` and `removed_lines` describe the saved diff logs. Character-level
 measures (`char_diff_added_characters` and `char_diff_removed_characters`)
 compare successive code snapshots, so a one-character correction is counted as
-one character rather than as a complete line replacement.
+one character rather than as a complete line replacement. Newly recorded
+notebooks also include the equivalent `cell_N_char_diff_*` measures for each
+cell.
 
 An idle episode starts after 120 seconds without a meaningful action. Editing,
 copying, cutting, pasting, and running a cell are meaningful actions; focus
