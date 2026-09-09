@@ -3,6 +3,9 @@ Calculates the following metrics per notebook log (one row per notebook):
 - total_duration: seconds between first and last event
 - total_working_duration: observed time between meaningful actions less than 45 seconds apart
 - total_clipboard_events: count of copy+cut+paste
+- total_copy_events: count of copy events
+- total_cut_events: count of cut events
+- total_paste_events: count of paste events
 - clipboard_lengths: JSON list of lengths (integers) for clipboard events in timestamp order
 - execution_events_count: number of execute events
 - execution_status_success: count of execute events with status success
@@ -25,6 +28,9 @@ using a readable label (for example, ``cell_1``):
   cell_1_total_duration
   cell_1_working_duration
   cell_1_clipboard_events
+  cell_1_copy_events
+  cell_1_cut_events
+  cell_1_paste_events
   cell_1_clipboard_lengths  (JSON list)
   cell_1_exec_count
   cell_1_exec_success
@@ -247,9 +253,13 @@ def compute_working_duration(
 
 def compute_clipboard_events(df: pd.DataFrame):
     cb_df = df[df.event.isin(["copy","cut","paste"])]
-    total_cb = cb_df.shape[0]
-    lengths = cb_df.length.dropna().astype(int).tolist()
-    return total_cb, lengths
+    return {
+        "total": cb_df.shape[0],
+        "copy": (cb_df.event == "copy").sum(),
+        "cut": (cb_df.event == "cut").sum(),
+        "paste": (cb_df.event == "paste").sum(),
+        "lengths": cb_df.length.dropna().astype(int).tolist(),
+    }
 
 def compute_execution_stats(df: pd.DataFrame):
     exec_df = df[df.event.str.contains("execute")]
@@ -560,15 +570,18 @@ def compute_per_cell_metrics(df: pd.DataFrame):
             continue
         total_duration = compute_total_duration(grp)
         working_duration = compute_working_duration(grp)
-        total_cb, lengths = compute_clipboard_events(grp)
+        clipboard = compute_clipboard_events(grp)
         exec_count, exec_success, exec_error = compute_execution_stats(grp)
         san = sanitize_cell_id(cell)
         result[san] = {
             "cell_raw": cell,
             "total_duration": total_duration,
             "working_duration": working_duration,
-            "clipboard_events": total_cb,
-            "clipboard_lengths": lengths,
+            "clipboard_events": clipboard["total"],
+            "copy_events": clipboard["copy"],
+            "cut_events": clipboard["cut"],
+            "paste_events": clipboard["paste"],
+            "clipboard_lengths": clipboard["lengths"],
             "exec_count": exec_count,
             "exec_success": exec_success,
             "exec_error": exec_error
@@ -644,11 +657,14 @@ def process_folder(folder: str):
         # Overall metrics
         row["total_duration"] = compute_total_duration(df)
         row["total_working_duration"] = compute_working_duration(df)
-        total_cb, cb_lengths = compute_clipboard_events(df)
-        row["total_clipboard_events"] = total_cb
+        clipboard = compute_clipboard_events(df)
+        row["total_clipboard_events"] = clipboard["total"]
+        row["total_copy_events"] = clipboard["copy"]
+        row["total_cut_events"] = clipboard["cut"]
+        row["total_paste_events"] = clipboard["paste"]
         
         # store clipboard lengths as JSON string to keep as single CSV cell
-        row["clipboard_lengths"] = json.dumps(cb_lengths)
+        row["clipboard_lengths"] = json.dumps(clipboard["lengths"])
         exec_total, exec_success, exec_error = compute_execution_stats(df)
         row["execution_events_count"] = exec_total
         row["execution_status_success"] = exec_success
@@ -676,6 +692,9 @@ def process_folder(folder: str):
             row[f"{label}_total_duration"] = metrics["total_duration"]
             row[f"{label}_working_duration"] = metrics["working_duration"]
             row[f"{label}_clipboard_events"] = metrics["clipboard_events"]
+            row[f"{label}_copy_events"] = metrics["copy_events"]
+            row[f"{label}_cut_events"] = metrics["cut_events"]
+            row[f"{label}_paste_events"] = metrics["paste_events"]
             row[f"{label}_clipboard_lengths"] = json.dumps(metrics["clipboard_lengths"])
             row[f"{label}_exec_count"] = metrics["exec_count"]
             row[f"{label}_exec_success"] = metrics["exec_success"]
@@ -717,6 +736,9 @@ def process_folder(folder: str):
             f"{san}_total_duration",
             f"{san}_working_duration",
             f"{san}_clipboard_events",
+            f"{san}_copy_events",
+            f"{san}_cut_events",
+            f"{san}_paste_events",
             f"{san}_clipboard_lengths",
             f"{san}_exec_count",
             f"{san}_exec_success",
@@ -733,7 +755,7 @@ def process_folder(folder: str):
                 # Fill with sensible defaults
                 if c.endswith("_clipboard_lengths"):
                     df_out[c] = json.dumps([])
-                elif c.endswith("_clipboard_events") or c.endswith("_exec_count") or c.endswith("_exec_success") or c.endswith("_exec_error") or c.endswith("_idle_count"):
+                elif c.endswith(("_clipboard_events", "_copy_events", "_cut_events", "_paste_events", "_exec_count", "_exec_success", "_exec_error", "_idle_count")):
                     df_out[c] = 0
                 elif "_char_diff_" in c:
                     # Older logs have no structured cell snapshots; blank means
@@ -747,6 +769,9 @@ def process_folder(folder: str):
         "total_duration",
         "total_working_duration",
         "total_clipboard_events",
+        "total_copy_events",
+        "total_cut_events",
+        "total_paste_events",
         "clipboard_lengths",
         "execution_events_count",
         "execution_status_success",
