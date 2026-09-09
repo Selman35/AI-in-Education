@@ -7,6 +7,8 @@ Calculates the following metrics per notebook log (one row per notebook):
 - total_cut_events: count of cut events
 - total_paste_events: count of paste events
 - clipboard_lengths: JSON list of lengths (integers) for clipboard events in timestamp order
+- average_clipboard_length: mean character length across clipboard events
+- clipboard_length_variance: sample variance of clipboard-event character lengths
 - execution_events_count: number of execute events
 - execution_status_success: count of execute events with status success
 - execution_status_error: count of execute events with status error
@@ -253,12 +255,15 @@ def compute_working_duration(
 
 def compute_clipboard_events(df: pd.DataFrame):
     cb_df = df[df.event.isin(["copy","cut","paste"])]
+    lengths = cb_df.length.dropna().astype(int).tolist()
     return {
         "total": cb_df.shape[0],
         "copy": (cb_df.event == "copy").sum(),
         "cut": (cb_df.event == "cut").sum(),
         "paste": (cb_df.event == "paste").sum(),
-        "lengths": cb_df.length.dropna().astype(int).tolist(),
+        "lengths": lengths,
+        "average_length": float(np.mean(lengths)) if lengths else np.nan,
+        "length_variance": float(np.var(lengths, ddof=1)) if len(lengths) >= 2 else np.nan,
     }
 
 def compute_execution_stats(df: pd.DataFrame):
@@ -662,6 +667,8 @@ def process_folder(folder: str):
         row["total_copy_events"] = clipboard["copy"]
         row["total_cut_events"] = clipboard["cut"]
         row["total_paste_events"] = clipboard["paste"]
+        row["average_clipboard_length"] = clipboard["average_length"]
+        row["clipboard_length_variance"] = clipboard["length_variance"]
         
         # store clipboard lengths as JSON string to keep as single CSV cell
         row["clipboard_lengths"] = json.dumps(clipboard["lengths"])
@@ -773,6 +780,8 @@ def process_folder(folder: str):
         "total_cut_events",
         "total_paste_events",
         "clipboard_lengths",
+        "average_clipboard_length",
+        "clipboard_length_variance",
         "execution_events_count",
         "execution_status_success",
         "execution_status_error",
