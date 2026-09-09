@@ -12,8 +12,9 @@ Calculates the following metrics per notebook log (one row per notebook):
 - execution_events_count: number of execute events
 - execution_status_success: count of execute events with status success
 - execution_status_error: count of execute events with status error
-- added_lines: number of added diff lines
-- removed_lines: number of removed diff lines
+- added_lines: actual source lines inserted between saved snapshots
+- removed_lines: actual source lines deleted between saved snapshots
+- modified_lines: existing source lines changed between saved snapshots
 - total_idle_time: time after the idle threshold with no meaningful student action
 - idle_episode_count: number of idle periods
 - longest_idle_time: duration of the longest idle period
@@ -40,6 +41,9 @@ using a readable label (for example, ``cell_1``):
   cell_1_char_diff_added_characters
   cell_1_char_diff_removed_characters
   cell_1_char_diff_net_character_change
+  cell_1_added_lines
+  cell_1_removed_lines
+  cell_1_modified_lines
 
 Output: a single CSV file (student_analytics.csv) where each row is a notebook
 (student), plus ``cell_mapping.csv`` which maps readable labels to stable Jupyter
@@ -274,23 +278,6 @@ def compute_execution_stats(df: pd.DataFrame):
     return total_exec, success, error
 
 
-def compute_change_stats(path: str):
-    """Count added and removed lines in a saved change log."""
-    added_lines = removed_lines = 0
-
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            if line.startswith("+ "):
-                added_lines += 1
-            elif line.startswith("- "):
-                removed_lines += 1
-
-    return {
-        "added_lines": added_lines,
-        "removed_lines": removed_lines,
-    }
-
-
 def parse_version_snapshots(path: str):
     """Read source snapshots from a versions log in chronological order."""
     if not os.path.exists(path):
@@ -414,6 +401,73 @@ def compute_cell_character_diff_stats(cell_version_log_path: str):
             "char_diff_net_character_change": values["added"] - values["removed"],
         }
         for label, values in stats.items()
+    }
+
+
+def compute_cell_line_diff_stats(cell_version_log_path: str):
+    """Return semantic inserted, deleted, and modified source-line totals.
+
+    A replacement is a modification, not a deletion plus an addition. When the
+    two replacement blocks have different sizes, only the unmatched lines are
+    counted as inserted or deleted.
+    """
+    snapshots = parse_cell_version_snapshots(cell_version_log_path)
+    if snapshots is None:
+        return None
+
+    stats = {}
+    previous = {}
+    for current in snapshots:
+        for cell_id in previous.keys() | current.keys():
+            old_cell = previous.get(cell_id, {"source": "", "label": None})
+            new_cell = current.get(cell_id, {"source": "", "label": None})
+            label = new_cell["label"] or old_cell["label"]
+            if label is None:
+                continue
+
+            cell_stats = stats.setdefault(
+                label, {"added": 0, "removed": 0, "modified": 0}
+            )
+            matcher = difflib.SequenceMatcher(
+                a=old_cell["source"].splitlines(),
+                b=new_cell["source"].splitlines(),
+                autojunk=False,
+            )
+            for operation, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+                old_count = old_end - old_start
+                new_count = new_end - new_start
+                if operation == "insert":
+                    cell_stats["added"] += new_count
+                elif operation == "delete":
+                    cell_stats["removed"] += old_count
+                elif operation == "replace":
+                    cell_stats["modified"] += min(old_count, new_count)
+                    cell_stats["added"] += max(0, new_count - old_count)
+                    cell_stats["removed"] += max(0, old_count - new_count)
+        previous = current
+
+    return {
+        label: {
+            "added_lines": values["added"],
+            "removed_lines": values["removed"],
+            "modified_lines": values["modified"],
+        }
+        for label, values in stats.items()
+    }
+
+
+def compute_line_diff_summary(cell_line_stats):
+    """Sum semantic line metrics across all cells in one notebook."""
+    if cell_line_stats is None:
+        return {
+            "added_lines": np.nan,
+            "removed_lines": np.nan,
+            "modified_lines": np.nan,
+        }
+    return {
+        "added_lines": sum(values["added_lines"] for values in cell_line_stats.values()),
+        "removed_lines": sum(values["removed_lines"] for values in cell_line_stats.values()),
+        "modified_lines": sum(values["modified_lines"] for values in cell_line_stats.values()),
     }
 
 
@@ -676,7 +730,6 @@ def process_folder(folder: str):
         row["execution_events_count"] = exec_total
         row["execution_status_success"] = exec_success
         row["execution_status_error"] = exec_error
-        row.update(compute_change_stats(path))
         version_path = os.path.join(
             os.path.dirname(os.path.normpath(folder)),
             VERSION_LOG_DIRNAME,
@@ -689,6 +742,8 @@ def process_folder(folder: str):
             os.path.splitext(os.path.basename(path))[0] + ".jsonl",
         )
         cell_character_stats = compute_cell_character_diff_stats(cell_version_path)
+        cell_line_stats = compute_cell_line_diff_stats(cell_version_path)
+        row.update(compute_line_diff_summary(cell_line_stats))
 
         # Per-cell
         cell_metrics = compute_per_cell_metrics(df)
@@ -721,6 +776,13 @@ def process_folder(folder: str):
                 row[f"{label}_char_diff_added_characters"] = metrics["char_diff_added_characters"]
                 row[f"{label}_char_diff_removed_characters"] = metrics["char_diff_removed_characters"]
                 row[f"{label}_char_diff_net_character_change"] = metrics["char_diff_net_character_change"]
+
+        if cell_line_stats is not None:
+            for label, metrics in cell_line_stats.items():
+                all_cell_keys.add(label)
+                row[f"{label}_added_lines"] = metrics["added_lines"]
+                row[f"{label}_removed_lines"] = metrics["removed_lines"]
+                row[f"{label}_modified_lines"] = metrics["modified_lines"]
 
         idle_by_cell = {}
         for event in idle_events:
@@ -756,6 +818,9 @@ def process_folder(folder: str):
             f"{san}_char_diff_added_characters",
             f"{san}_char_diff_removed_characters",
             f"{san}_char_diff_net_character_change",
+            f"{san}_added_lines",
+            f"{san}_removed_lines",
+            f"{san}_modified_lines",
         ]
         for c in cols:
             if c not in df_out.columns:
@@ -767,6 +832,10 @@ def process_folder(folder: str):
                 elif "_char_diff_" in c:
                     # Older logs have no structured cell snapshots; blank means
                     # unavailable rather than a measured value of zero.
+                    df_out[c] = np.nan
+                elif c.endswith(("_added_lines", "_removed_lines", "_modified_lines")):
+                    # Older logs have no structured cell snapshots, so an
+                    # accurate semantic line count is unavailable.
                     df_out[c] = np.nan
                 else:
                     df_out[c] = 0.0
@@ -787,6 +856,7 @@ def process_folder(folder: str):
         "execution_status_error",
         "added_lines",
         "removed_lines",
+        "modified_lines",
         "total_idle_time",
         "idle_episode_count",
         "longest_idle_time",

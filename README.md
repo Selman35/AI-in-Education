@@ -138,11 +138,12 @@ This regenerates the reports below:
 ### Understanding the main metrics
 
 The report includes line-based and character-level code-change measures.
-`added_lines` and `removed_lines` describe the saved diff logs. Character-level
-measures (`char_diff_added_characters` and `char_diff_removed_characters`)
-compare successive code snapshots, so a one-character correction is counted as
-one character rather than as a complete line replacement. Newly recorded
-notebooks also include the equivalent `cell_N_char_diff_*` measures for each
+`added_lines` and `removed_lines` count actual inserted and deleted source lines,
+while `modified_lines` counts changed existing lines. Character-level measures
+(`char_diff_added_characters` and `char_diff_removed_characters`) compare
+successive code snapshots, so a one-character correction is counted as one
+character rather than as a complete line replacement. Newly recorded notebooks
+also include equivalent `cell_N_*` character and line-change measures for each
 cell.
 
 An idle episode starts after 120 seconds without a meaningful action. Editing,
