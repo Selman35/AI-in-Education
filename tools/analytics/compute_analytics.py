@@ -69,6 +69,7 @@ MAPPING_FILENAME = "cell_mapping.csv"
 EXECUTION_SUMMARY_FILENAME = "cell_execution_summary.csv"
 IDLE_EVENTS_FILENAME = "idle_events.csv"
 ACTIVE_SESSIONS_FILENAME = "active_sessions.csv"
+CLIPBOARD_EVENTS_FILENAME = "clipboard_events.csv"
 VERSION_LOG_DIRNAME = "versions"
 CELL_VERSION_LOG_DIRNAME = "cell_versions"
 WORKING_ACTIVITY_GAP = 45.0  # maximum seconds between actions counted as active work
@@ -680,6 +681,7 @@ def process_folder(folder: str):
     execution_rows = []
     idle_rows = []
     active_session_rows = []
+    clipboard_rows = []
     # Collect union of cell IDs across all students to ensure consistent columns
     all_cell_keys = set()
 
@@ -704,6 +706,17 @@ def process_folder(folder: str):
         if active_sessions is not None:
             for session in active_sessions:
                 active_session_rows.append({"student": student, **session})
+
+        for _, event in df[df.event.isin(["copy", "cut", "paste"])].iterrows():
+            if pd.isna(event.length):
+                continue
+            clipboard_rows.append({
+                "student": student,
+                "timestamp": event.ts.isoformat(),
+                "event": event.event,
+                "cell": cell_labels.get(event.cell, "unknown"),
+                "character_length": int(event.length),
+            })
 
         for raw_cell, label in cell_labels.items():
             mapping_rows.append({
@@ -900,6 +913,13 @@ def process_folder(folder: str):
         columns=["student", "start_time", "end_time", "duration_seconds", "start_cell", "end_cell", "end_reason"],
     ).to_csv(active_sessions_path, index=False)
     print(f"Saved active sessions to {active_sessions_path}")
+
+    clipboard_path = os.path.join(folder, CLIPBOARD_EVENTS_FILENAME)
+    pd.DataFrame(
+        clipboard_rows,
+        columns=["student", "timestamp", "event", "cell", "character_length"],
+    ).to_csv(clipboard_path, index=False)
+    print(f"Saved clipboard events to {clipboard_path}")
 
 if __name__ == "__main__":
     import sys
