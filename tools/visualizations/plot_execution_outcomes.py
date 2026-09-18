@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_INPUT = Path("internal_diff_logs/changes/student_analytics.csv")
+DEFAULT_INPUT = Path("internal_diff_logs/analytics/student_analytics.csv")
 DEFAULT_OUTPUT = Path("internal_diff_logs/plots/execution_outcomes_by_student.png")
 
 

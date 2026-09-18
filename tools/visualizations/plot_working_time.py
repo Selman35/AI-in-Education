@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-DEFAULT_INPUT = Path("internal_diff_logs/changes/student_analytics.csv")
+DEFAULT_INPUT = Path("internal_diff_logs/analytics/student_analytics.csv")
 DEFAULT_OUTPUT = Path(
     "internal_diff_logs/plots/estimated_working_time_by_student.png"
 )

@@ -48,13 +48,12 @@ This extension aims to do the same for jupyterlab as the following setting in VS
 pip install jupyterlab-autosave-on-focus-change
 ```
 
-## Using this project for notebook analytics
+## Notebook analytics workflow
 
-This project builds on the autosave extension to create local analytics from
-student notebook activity. It records events such as edits, cell runs, and
-saved code changes, then turns those logs into CSV reports. The reports are
-intended to help understand how a notebook was worked on; they are not a score
-or an automatic judgement of a student.
+This project extends the autosave extension with local notebook analytics. It
+records student activity, turns it into CSV reports, and creates plots for
+review. The reports describe how a notebook was worked on; they are not an
+automatic score or judgement of a student.
 
 ### First-time setup with Conda
 
@@ -67,8 +66,14 @@ conda create -n jupyterlab_autosave_on_focus_change-demo \
 conda activate jupyterlab_autosave_on_focus_change-demo
 ```
 
-From the root of this repository, install the local Python package, link the
-extension to JupyterLab, build it, and start JupyterLab:
+Install the libraries used to create the analytics reports and plots:
+
+```bash
+conda install -c conda-forge pandas matplotlib numpy
+```
+
+From the repository root, install the local package, link the extension to
+JupyterLab, build it, and start JupyterLab:
 
 ```bash
 export PATH="$CONDA_PREFIX/bin:$PATH"
@@ -78,8 +83,8 @@ jlpm run build
 jupyter lab
 ```
 
-If you change a TypeScript file in `src/`, rebuild with `jlpm run build` and
-refresh the JupyterLab page. Restart JupyterLab if the change does not appear.
+If you change a TypeScript file in `src/`, run `jlpm run build` again and refresh
+the JupyterLab page. Restart JupyterLab if the change does not appear.
 
 ### Configure collection
 
@@ -87,9 +92,8 @@ In JupyterLab, open:
 
 `Settings → Settings Editor → Autosave on Focus Change`
 
-For normal data collection, make sure the extension is active and set
-**Periodic autosave interval (seconds)** to `30`. A value of `0` disables
-periodic autosave.
+For normal data collection, enable the extension and set **Periodic autosave
+interval (seconds)** to `30`. A value of `0` disables periodic autosave.
 
 Periodic saving uses the same normal save and logging path as focus-change
 saving. It saves only notebooks with unsaved changes, so an unchanged notebook
@@ -106,14 +110,16 @@ The files are written locally under:
 
 ```text
 internal_diff_logs/
-├── changes/   # event logs and generated CSV reports
-└── versions/  # saved source snapshots
+├── changes/        # raw event logs and saved line diffs
+├── versions/       # whole-notebook source snapshots
+├── cell_versions/  # structured per-cell source snapshots
+├── analytics/      # generated CSV reports
+└── plots/          # generated plot images
 ```
 
-These logs can contain student work and activity data. They are ignored by Git,
-but `.gitignore` does not prevent access to them. Configure filesystem and
-Jupyter server permissions if students must not be able to view or modify the
-logs.
+These folders can contain student work and activity data. They are ignored by
+Git, but `.gitignore` does not restrict access. Use filesystem and Jupyter
+server permissions if students must not be able to view or modify the data.
 
 ### Create the analytics reports
 
@@ -122,10 +128,10 @@ repository root:
 
 ```bash
 conda activate jupyterlab_autosave_on_focus_change-demo
-python tools/analytics/compute_analytics.py internal_diff_logs/changes
+python tools/generate_analytics_and_plots.py
 ```
 
-This regenerates the reports below:
+This command regenerates the reports below and all available plots:
 
 | File | What it contains |
 | --- | --- |
@@ -134,10 +140,20 @@ This regenerates the reports below:
 | `cell_execution_summary.csv` | Execution, success, and error counts for each cell. |
 | `idle_events.csv` | Each detected period of inactivity. |
 | `active_sessions.csv` | Each detected active editing session. |
+| `clipboard_events.csv` | One row per copy, cut, or paste event. |
+
+Reports are written to `internal_diff_logs/analytics/`. Images are written to
+`internal_diff_logs/plots/`.
 
 ### Understanding the main metrics
 
-The report includes line-based and character-level code-change measures.
+The report includes activity, execution, line-change, and character-change
+measures.
+
+`total_working_duration` estimates observable work. It counts the time between
+meaningful actions when the gap is under 45 seconds. Meaningful actions are
+editing, copying, cutting, pasting, and running a cell.
+
 `added_lines` and `removed_lines` count actual inserted and deleted source lines,
 while `modified_lines` counts changed existing lines. Character-level measures
 (`char_diff_added_characters` and `char_diff_removed_characters`) compare
@@ -153,8 +169,8 @@ is counted as idle time. For example, 185 seconds without activity produces
 65 seconds of recorded idle time.
 
 An active editing session contains meaningful actions less than five minutes
-apart. A student leaving the assignment closes the session, and time spent away
-from the assignment is not counted as idle time.
+apart. Leaving the assignment closes the session, and time away is not counted
+as idle time.
 
 ### Quick check
 
@@ -165,11 +181,12 @@ To verify a new installation, create a fresh notebook and:
    `1 / 0`.
 3. Change one character in a cell and wait for another save.
 4. Leave the notebook visible but untouched for 185 seconds, then edit again.
-5. Run the analytics command and inspect the CSV files in
-   `internal_diff_logs/changes`.
+5. Run the workflow command and inspect the CSV files in
+   `internal_diff_logs/analytics` and the images in `internal_diff_logs/plots`.
 
 The test should show a periodic save, correct execution results, character
-changes, and an idle event of roughly 65 seconds for the 185-second pause.
+changes, and an idle event of roughly 65 seconds for the 185-second pause. It
+should also create working-time, idle-time, execution, and clipboard plots.
 
 ## Contributing
 

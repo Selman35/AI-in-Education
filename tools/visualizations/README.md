@@ -1,21 +1,27 @@
-# Analytics visualizations
+# Analytics plots
 
-This folder contains reproducible plot scripts. Each script reads generated CSV
-reports from `internal_diff_logs/changes/` and writes an image to
-`internal_diff_logs/plots/`. Plot scripts do not modify raw logs or analytics.
+This folder contains the plot scripts used by the analytics workflow. The
+scripts read CSV reports from `internal_diff_logs/analytics/` and write PNG
+images to `internal_diff_logs/plots/`. They do not modify raw logs.
 
-## Plot 1: Estimated working time by student
+From the repository root, regenerate all reports and plots with:
+
+```bash
+python tools/generate_analytics_and_plots.py
+```
+
+The current workflow creates:
+
+| Plot | Output file |
+| --- | --- |
+| Estimated working time by student | `estimated_working_time_by_student.png` |
+| Total idle time by student | `idle_time_by_student.png` |
+| Total, successful, and failed cell runs by student | `execution_outcomes_by_student.png` |
+| Copy, paste, and cut length distribution for each student | `clipboard_distribution_<student>.png` |
+
+Each plot script can also be run directly. For example:
 
 ```bash
 python tools/visualizations/plot_working_time.py
+python tools/visualizations/plot_clipboard_distribution.py --student clipboard_test
 ```
-
-The script reads `student_analytics.csv` and creates:
-
-```text
-internal_diff_logs/plots/estimated_working_time_by_student.png
-```
-
-It visualizes `total_working_duration` in minutes. This metric is an estimate
-of observable work: it counts intervals shorter than 45 seconds between
-meaningful student actions.

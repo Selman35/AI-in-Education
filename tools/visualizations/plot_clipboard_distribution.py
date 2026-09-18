@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_INPUT = Path("internal_diff_logs/changes/clipboard_events.csv")
+DEFAULT_INPUT = Path("internal_diff_logs/analytics/clipboard_events.csv")
 DEFAULT_OUTPUT_DIR = Path("internal_diff_logs/plots")
 EVENT_TYPES = ["copy", "paste", "cut"]
 EVENT_COLORS = {"copy": "#377eb8", "paste": "#4daf4a", "cut": "#e41a1c"}
