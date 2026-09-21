@@ -104,7 +104,9 @@ does not create a new snapshot every 30 seconds.
 Events are connected to readable notebook locations such as `cell 1` and
 `cell 2`. The extension records edits, copy/cut/paste events, cell executions
 (including success or error), focus activity, assignment-window activity, and
-saved code changes.
+saved code changes. A paste matching the latest copy or cut from the same
+notebook is also recorded as an internal clipboard transfer; clipboard text is
+not written to disk.
 
 The files are written locally under:
 
@@ -141,6 +143,7 @@ This command regenerates the reports below and all available plots:
 | `idle_events.csv` | Each detected period of inactivity. |
 | `active_sessions.csv` | Each detected active editing session. |
 | `clipboard_events.csv` | One row per copy, cut, or paste event. |
+| `clipboard_transfers.csv` | Confirmed same-notebook copy/cut-to-paste transfers. |
 
 Reports are written to `internal_diff_logs/analytics/`. Images are written to
 `internal_diff_logs/plots/`.
@@ -236,9 +239,27 @@ jupyter lab build --minimize=False
 pip uninstall jupyterlab-autosave-on-focus-change
 ```
 
-## Contributors ✨
+## Acknowledgements and attribution
 
-Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/docs/en/emoji-key)):
+This project is based on
+[JupyterLab Autosave on Focus Change](https://github.com/s-weigand/jupyterlab_autosave_on_focus_change)
+by Sebastian Weigand and its upstream contributors. The original extension
+provides the JupyterLab autosave functionality on which this project is built
+and remains distributed under the BSD-3-Clause licence.
+
+The initial assignment-audit extensions, including early notebook interaction
+and logging functionality, were adapted from work by Ivan Ivanenko.
+
+Selman Gül further developed the project into a student notebook-analytics
+tool. This work includes expanded event logging, periodic changed-notebook
+saving, source snapshots, code-change metrics, idle and working-time metrics,
+active-session analysis, execution and clipboard analytics, confirmed internal
+clipboard transfers, CSV reports, visualisations, and project documentation.
+
+## Upstream contributors
+
+The people below contributed to the original autosave extension. Their listing
+does not imply endorsement of this modified student-analytics project.
 
 <!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
 <!-- prettier-ignore-start -->
@@ -258,4 +279,6 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/d
 
 <!-- ALL-CONTRIBUTORS-LIST:END -->
 
-This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind welcome!
+This inherited list follows the
+[all-contributors](https://github.com/all-contributors/all-contributors)
+specification.
