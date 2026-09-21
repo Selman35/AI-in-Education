@@ -73,6 +73,9 @@ VERSION_LOG_DIRNAME = "versions"
 CELL_VERSION_LOG_DIRNAME = "cell_versions"
 WORKING_ACTIVITY_GAP = 45.0  # maximum seconds between actions counted as active work
 IDLE_ACTIVITY_THRESHOLD = 120.0  # seconds without meaningful student activity
+# Longer gaps cannot reliably be separated from a closed notebook or a missed
+# browser lifecycle event, so they are excluded from observed idle time.
+MAX_IDLE_OBSERVATION_GAP = 60 * 60.0  # one hour
 ACTIVE_SESSION_GAP = 5 * 60.0  # seconds between meaningful actions
 LEGACY_EXECUTION_MATCH_WINDOW = 5.0  # seconds
 MEANINGFUL_ACTIVITY_EVENTS = {"edit", "copy", "cut", "paste", "execute"}
@@ -471,13 +474,20 @@ def compute_line_diff_summary(cell_line_stats):
     }
 
 
-def compute_idle_events(df: pd.DataFrame, cell_labels: dict, threshold: float = IDLE_ACTIVITY_THRESHOLD):
+def compute_idle_events(
+    df: pd.DataFrame,
+    cell_labels: dict,
+    threshold: float = IDLE_ACTIVITY_THRESHOLD,
+    maximum_observation_gap: float = MAX_IDLE_OBSERVATION_GAP,
+):
     """Return periods of no meaningful student activity beyond ``threshold``.
 
     Focus events and automatic saves are deliberately excluded. Only edit,
     clipboard, and execution events reset the inactivity timer. Assignment
     active/inactive events bound the calculation so time outside JupyterLab is
-    not counted. The idle period is attributed to the last active cell.
+    not counted. Gaps longer than ``maximum_observation_gap`` are excluded:
+    they usually mean the notebook was closed or a lifecycle event was missed.
+    The idle period is attributed to the last active cell.
     """
     relevant = df[
         df.event.isin(MEANINGFUL_ACTIVITY_EVENTS | ASSIGNMENT_PRESENCE_EVENTS)
@@ -490,7 +500,7 @@ def compute_idle_events(df: pd.DataFrame, cell_labels: dict, threshold: float = 
         if previous_activity is None:
             return
         gap = (following.ts - previous_activity.ts).total_seconds()
-        if gap <= threshold:
+        if gap <= threshold or gap > maximum_observation_gap:
             return
         events.append({
             "start_time": previous_activity.ts + timedelta(seconds=threshold),

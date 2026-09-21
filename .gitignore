@@ -7,6 +7,7 @@ lib/
 internal_diff_logs/
 .internal_diff_logs/
 .ipynb_checkpoints/
+*.ipynb
 .virtual_documents/
 __pycache__/
 *.py[cod]
@@ -16,5 +17,3 @@ jupyterlab_autosave_on_focus_change/labextension/
 jupyterlab_autosave_on_focus_change/_version.py
 
 # Local notebooks used for manual extension testing
-Untitled1.ipynb
-trial.ipynb

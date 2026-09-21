@@ -168,6 +168,10 @@ events and automatic saves are not. Only the time after the first 120 seconds
 is counted as idle time. For example, 185 seconds without activity produces
 65 seconds of recorded idle time.
 
+Gaps longer than one hour are not treated as idle time. They usually mean the
+notebook was closed or that the browser did not record a leave event, so they
+cannot be reliably interpreted as time spent inactive in the assignment.
+
 An active editing session contains meaningful actions less than five minutes
 apart. Leaving the assignment closes the session, and time away is not counted
 as idle time.
