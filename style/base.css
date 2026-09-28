@@ -3,3 +3,7 @@
 
     https://jupyterlab.readthedocs.io/en/stable/developer/css.html
 */
+
+.jp-Cell.student-analytics-protected-cell {
+  border-left: 3px solid var(--jp-brand-color1);
+}

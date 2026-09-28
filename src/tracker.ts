@@ -374,9 +374,15 @@ export class FocusChangeAutoSaveTracker {
       return '';
     }
 
-    // One notebook-wide position keeps all event types (including execute)
-    // on the same identifier and avoids a code-cell/markdown-cell collision.
-    return `[cell ${cellIndex + 1}]`;
+    // Template cells have a semantic key that is shared by every student copy.
+    // Keep the position too, so ordinary notebooks and historical logs remain
+    // readable, but analytics will prefer the stable semantic label.
+    const templateCellKey = activeCell.getMetadata('analytics_cell_key');
+    const semanticLabel =
+      typeof templateCellKey === 'string' && templateCellKey.trim()
+        ? `[cell label: ${templateCellKey.trim()}]`
+        : '';
+    return `[cell ${cellIndex + 1}]${semanticLabel}`;
   }
 
   private getChangeLocation(widget: Widget): string {
@@ -453,6 +459,7 @@ export class FocusChangeAutoSaveTracker {
       let currentCellSnapshots: Array<{
         cell_id: string;
         cell_index: number;
+        template_cell_key?: string;
         source: string;
       }> = [];
 
@@ -469,6 +476,10 @@ export class FocusChangeAutoSaveTracker {
                 return {
                   cell_id: typeof cell.id === 'string' ? cell.id : `position_${index + 1}`,
                   cell_index: index + 1,
+                  template_cell_key:
+                    typeof cell.metadata?.analytics_cell_key === 'string'
+                      ? cell.metadata.analytics_cell_key
+                      : undefined,
                   source
                 };
               }
@@ -477,6 +488,7 @@ export class FocusChangeAutoSaveTracker {
             .filter((cell: unknown): cell is {
               cell_id: string;
               cell_index: number;
+              template_cell_key?: string;
               source: string;
             } => cell !== null);
           currentContent = currentCellSnapshots

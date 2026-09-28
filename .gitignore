@@ -8,6 +8,7 @@ internal_diff_logs/
 .internal_diff_logs/
 .ipynb_checkpoints/
 *.ipynb
+!templates/initial_assignment_template.ipynb
 .virtual_documents/
 __pycache__/
 *.py[cod]

@@ -354,11 +354,16 @@ def parse_cell_version_snapshots(path: str):
                     continue
                 cell_id = cell.get("cell_id")
                 cell_index = cell.get("cell_index")
+                template_cell_key = cell.get("template_cell_key")
                 source = cell.get("source")
                 if not isinstance(cell_id, str) or not isinstance(cell_index, int) or not isinstance(source, str):
                     continue
                 snapshot[cell_id] = {
-                    "label": f"cell_{cell_index}",
+                    "label": (
+                        sanitize_cell_id(template_cell_key)
+                        if isinstance(template_cell_key, str) and template_cell_key.strip()
+                        else f"cell_{cell_index}"
+                    ),
                     "source": source,
                 }
             snapshots.append(snapshot)

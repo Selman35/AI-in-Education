@@ -15,6 +15,7 @@ import { IMainMenu } from '@jupyterlab/mainmenu';
 import { FocusChangeAutoSaveTracker } from './tracker';
 import { FocusChangeAutoSaveSettings } from './settings';
 import { PLUGIN_ID } from './consts';
+import { AssignmentTemplateController } from './assignment_template';
 
 /**
  * Initialization data for the jupyterlab_autosave_on_focus_change extension.
@@ -52,6 +53,10 @@ const extension: JupyterFrontEndPlugin<void> = {
       notebookTracker,
       editorTracker
       // debug: true,
+    });
+
+    const assignmentTemplateController = new AssignmentTemplateController({
+      notebookTracker
     });
 
     document.addEventListener('copy', function(){
@@ -95,6 +100,7 @@ const extension: JupyterFrontEndPlugin<void> = {
 
     NotebookActions.executed.connect((_, args) => {
       focusSaveTracker.executionEventLogger(args.success, args.cell);
+      void assignmentTemplateController.handleCellExecution(args.cell.model);
     });
 
     const settings = new FocusChangeAutoSaveSettings({

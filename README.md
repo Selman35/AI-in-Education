@@ -98,6 +98,14 @@ Periodic saving uses the same normal save and logging path as focus-change
 saving. It saves only notebooks with unsaved changes, so an unchanged notebook
 does not create a new snapshot every 30 seconds.
 
+### Assignment template draft
+
+The initial [assignment template](templates/initial_assignment_template.ipynb)
+shows the intended student-facing structure: a protected course-information
+header, one student-name entry cell, instructions, and answer cells. It is a
+layout draft only. The planned confirmation, automatic rename, and move-locking
+behaviour are not implemented in the template yet.
+
 ### What is recorded
 
 Events are connected to readable notebook locations such as `cell 1` and
