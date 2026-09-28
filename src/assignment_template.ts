@@ -23,6 +23,7 @@ interface IProtectedCell {
 interface ITemplateState {
   panel: NotebookPanel;
   protectedCells: Map<string, IProtectedCell>;
+  initialCellIds: Set<string>;
   watchedEditableCellIds: Set<string>;
   reconcileScheduled: boolean;
   confirmingName: boolean;
@@ -143,6 +144,9 @@ export class AssignmentTemplateController {
     const state: ITemplateState = {
       panel,
       protectedCells,
+      // Keep pre-existing cells intact when an older notebook is opened. New
+      // cells are not added to this set, so the fixed template cannot grow.
+      initialCellIds: new Set([...model.cells].map(cell => cell.id)),
       watchedEditableCellIds: new Set(),
       reconcileScheduled: false,
       confirmingName: false
@@ -272,6 +276,19 @@ export class AssignmentTemplateController {
     const model = state.panel.model;
     if (!model || state.confirmingName) {
       return;
+    }
+
+    // A template may only contain the cells it had when it was opened. This
+    // removes cells inserted through JupyterLab menus, toolbar buttons, or
+    // shortcuts before they can become unlabelled analytics cells.
+    for (let index = model.cells.length - 1; index >= 0; index--) {
+      const cell = model.cells.get(index);
+      if (
+        !state.protectedCells.has(cell.id) &&
+        !state.initialCellIds.has(cell.id)
+      ) {
+        model.sharedModel.deleteCell(index);
+      }
     }
 
     this._markProtectedCells(state);
