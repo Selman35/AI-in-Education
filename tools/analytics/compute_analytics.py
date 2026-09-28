@@ -161,6 +161,11 @@ def parse_log_file(path: str):
             m_label = re.search(r"\[cell label:\s*([^\]]+)\]", line)
             if m_label:
                 cell_label = m_label.group(1).strip()
+                # New assignment templates log their stable semantic key without
+                # a positional cell number. Use a separate internal reference so
+                # per-cell analytics remain available for those events.
+                if cell is None:
+                    cell = f"template_{cell_label}"
 
             len_m = re.search(r"length:\s*(\d+)", line)
             length = int(len_m.group(1)) if len_m else np.nan
@@ -666,8 +671,10 @@ def compute_per_cell_metrics(df: pd.DataFrame):
 def resolve_cell_labels(df: pd.DataFrame) -> dict:
     """Map each log cell reference to a readable, unique column prefix.
 
-    New logs provide ``[cell N]``. Historical UUID-only execution entries are
-    first matched to a nearby numbered event when the evidence is strong enough.
+    Assignment-template logs provide a stable ``[cell label: ...]`` key, while
+    ordinary notebooks provide ``[cell N]``. Historical UUID-only execution
+    entries are first matched to a nearby numbered event when the evidence is
+    strong enough.
     """
     labels = {}
     used = set()

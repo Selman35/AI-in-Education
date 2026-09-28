@@ -37,7 +37,6 @@ export interface IFocusSaveTrackerArgs {
  * Tracker to react to focus changes of all document widgets.
  */
 export class FocusChangeAutoSaveTracker {
-
   /** Instance of IShell (app.shell) passed to the extension.  */
   private _shell: JupyterFrontEnd.IShell;
   /** Instance of IDocumentManager passed to the extension.  */
@@ -63,7 +62,10 @@ export class FocusChangeAutoSaveTracker {
   // handle async operations by queuing them
   private _operationQueues = new Map<string, Promise<void>>();
   private _lastFocusedLocation = new Map<string, string>();
-  private _cellOrder = new Map<string, Map<string, { type: 'code' | 'markdown'; ord: number }>>();
+  private _cellOrder = new Map<
+    string,
+    Map<string, { type: 'code' | 'markdown'; ord: number }>
+  >();
   private _periodicSaveTimer: number | undefined;
   private _lastEditLogTime = new Map<string, number>();
 
@@ -93,7 +95,10 @@ export class FocusChangeAutoSaveTracker {
   documentWidgets(skipTracked = true): Array<Widget> {
     const widgetArray: Widget[] = [];
     for (const widget of toArray(this._shell.widgets('main'))) {
-      if (widget.node.classList.contains('saves-on-lose-focus') && skipTracked) {
+      if (
+        widget.node.classList.contains('saves-on-lose-focus') &&
+        skipTracked
+      ) {
         continue;
       }
       if (this.isDocumentWidget(widget)) {
@@ -135,19 +140,26 @@ export class FocusChangeAutoSaveTracker {
   }
 
   //queue operation to avoid race condition
-  private async queueOperation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
-    const currentQueue = this._operationQueues.get(filePath) || Promise.resolve();
-    
+  private async queueOperation<T>(
+    filePath: string,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const currentQueue =
+      this._operationQueues.get(filePath) || Promise.resolve();
+
     const newQueue = currentQueue
       .then(() => operation())
-      .catch((error) => {
+      .catch(error => {
         console.error(`Error in queued operation for ${filePath}:`, error);
         throw error;
       });
-    
+
     // Store the queue as Promise<void> to prevent type issues
-    this._operationQueues.set(filePath, newQueue.then(() => {}).catch(() => {}));
-    
+    this._operationQueues.set(
+      filePath,
+      newQueue.then(() => {}).catch(() => {})
+    );
+
     return newQueue;
   }
 
@@ -158,9 +170,12 @@ export class FocusChangeAutoSaveTracker {
     }
 
     // Load existing mapping or start fresh
-    const map = this._cellOrder.get(path) || new Map<string, { type: 'code' | 'markdown'; ord: number }>();
+    const map =
+      this._cellOrder.get(path) ||
+      new Map<string, { type: 'code' | 'markdown'; ord: number }>();
     // Compute next available counters based on existing entries
-    let nextCode = 1, nextMd = 1;
+    let nextCode = 1,
+      nextMd = 1;
     for (const info of map.values()) {
       if (info.type === 'code') nextCode = Math.max(nextCode, info.ord + 1);
       else nextMd = Math.max(nextMd, info.ord + 1);
@@ -184,36 +199,40 @@ export class FocusChangeAutoSaveTracker {
   /**
    * Logs events to diff log.
    */
-  private async logEvent(logEntry: string, context: DocumentRegistry.IContext<DocumentRegistry.IModel>): Promise<void> {
-    
+  private async logEvent(
+    logEntry: string,
+    context: DocumentRegistry.IContext<DocumentRegistry.IModel>
+  ): Promise<void> {
     const safeFileName = context.path.replace(/\//g, '__');
     const internalDiffLogPath = `internal_diff_logs/changes/${safeFileName}.log`;
 
     let prevLog = '';
     try {
-      const logModel = await this._docManager.services.contents.get(internalDiffLogPath);
+      const logModel =
+        await this._docManager.services.contents.get(internalDiffLogPath);
       if (logModel.format === 'text' && typeof logModel.content === 'string') {
         prevLog = logModel.content;
       }
     } catch (err) {
       // No previous log is fine.
     }
-    
+
     try {
       await this._docManager.services.contents.save(internalDiffLogPath, {
         type: 'file',
         format: 'text',
         content: prevLog + logEntry
       });
-    } catch (err) {
-
-    }
+    } catch (err) {}
   }
 
   /**
    *  focus-logging helper
    */
-  private async focusEventHelper(eventType: string, widget: Widget): Promise<void> {
+  private async focusEventHelper(
+    eventType: string,
+    widget: Widget
+  ): Promise<void> {
     if (!widget) {
       return;
     }
@@ -261,7 +280,9 @@ export class FocusChangeAutoSaveTracker {
           if (context) {
             console.log(this.getChangeLocation(widget));
             this.ensureCellOrder(context.path, widget);
-            void this.queueOperation(context.path, () => this.focusEventHelper('focusin', widget!));
+            void this.queueOperation(context.path, () =>
+              this.focusEventHelper('focusin', widget!)
+            );
           }
         }
         break;
@@ -295,9 +316,12 @@ export class FocusChangeAutoSaveTracker {
   }
 
   /**
-   *  Clipboard-logging helper 
+   *  Clipboard-logging helper
    */
-  public async clipboardEventLogger(eventType: string, length: number): Promise<void> {
+  public async clipboardEventLogger(
+    eventType: string,
+    length: number
+  ): Promise<void> {
     const widget = this._shell.currentWidget;
     if (!widget) {
       return;
@@ -341,7 +365,9 @@ export class FocusChangeAutoSaveTracker {
 
     const timestamp = new Date(now).toISOString();
     const logEntry = `[${timestamp}][edit]${location}\n`;
-    await this.queueOperation(context.path, () => this.logEvent(logEntry, context));
+    await this.queueOperation(context.path, () =>
+      this.logEvent(logEntry, context)
+    );
   }
 
   /** Log whether the JupyterLab tab/window is available for student activity. */
@@ -360,7 +386,9 @@ export class FocusChangeAutoSaveTracker {
     const location = this.getChangeLocation(widget);
     const event = isActive ? 'assignment-active' : 'assignment-inactive';
     const logEntry = `[${timestamp}][${event}]${location}\n`;
-    await this.queueOperation(context.path, () => this.logEvent(logEntry, context));
+    await this.queueOperation(context.path, () =>
+      this.logEvent(logEntry, context)
+    );
   }
 
   /**
@@ -375,14 +403,14 @@ export class FocusChangeAutoSaveTracker {
     }
 
     // Template cells have a semantic key that is shared by every student copy.
-    // Keep the position too, so ordinary notebooks and historical logs remain
-    // readable, but analytics will prefer the stable semantic label.
+    // Positions can change for a moment while the template controller restores
+    // a blocked structural edit, so they are deliberately not logged here.
     const templateCellKey = activeCell.getMetadata('analytics_cell_key');
-    const semanticLabel =
-      typeof templateCellKey === 'string' && templateCellKey.trim()
-        ? `[cell label: ${templateCellKey.trim()}]`
-        : '';
-    return `[cell ${cellIndex + 1}]${semanticLabel}`;
+    if (typeof templateCellKey === 'string' && templateCellKey.trim()) {
+      return `[cell label: ${templateCellKey.trim()}]`;
+    }
+
+    return `[cell ${cellIndex + 1}]`;
   }
 
   private getChangeLocation(widget: Widget): string {
@@ -394,17 +422,23 @@ export class FocusChangeAutoSaveTracker {
     return this.getCellLocation(widget, notebook.activeCellIndex);
   }
 
-  public async executionEventLogger(success: boolean, cell: Cell): Promise<void> {
+  public async executionEventLogger(
+    success: boolean,
+    cell: Cell
+  ): Promise<void> {
     const widget = this._shell.currentWidget!;
     const context = this._docManager.contextForWidget(widget);
-    if (!context) { return; }
+    if (!context) {
+      return;
+    }
     const notebookPanel = this._notebookTracker.find(p => p.id === widget.id);
     const cellIndex = notebookPanel?.content.widgets.findIndex(
       cellWidget => cellWidget.model.id === cell.model.id
     );
-    const location = cellIndex === undefined || cellIndex < 0
-      ? ''
-      : this.getCellLocation(widget, cellIndex);
+    const location =
+      cellIndex === undefined || cellIndex < 0
+        ? ''
+        : this.getCellLocation(widget, cellIndex);
     if (!location) {
       return;
     }
@@ -412,7 +446,9 @@ export class FocusChangeAutoSaveTracker {
     const status = success ? 'success' : 'error';
 
     const logEntry = `[${timestamp}][execute]${location} status: ${status}\n`;
-    await this.queueOperation(context.path, () => this.logEvent(logEntry, context));
+    await this.queueOperation(context.path, () =>
+      this.logEvent(logEntry, context)
+    );
   }
 
   /**
@@ -472,9 +508,12 @@ export class FocusChangeAutoSaveTracker {
               if (cell.cell_type === 'code' || cell.cell_type === 'markdown') {
                 const source = Array.isArray(cell.source)
                   ? cell.source.join('')
-                  : cell.source ?? '';
+                  : (cell.source ?? '');
                 return {
-                  cell_id: typeof cell.id === 'string' ? cell.id : `position_${index + 1}`,
+                  cell_id:
+                    typeof cell.id === 'string'
+                      ? cell.id
+                      : `position_${index + 1}`,
                   cell_index: index + 1,
                   template_cell_key:
                     typeof cell.metadata?.analytics_cell_key === 'string'
@@ -485,12 +524,16 @@ export class FocusChangeAutoSaveTracker {
               }
               return null;
             })
-            .filter((cell: unknown): cell is {
-              cell_id: string;
-              cell_index: number;
-              template_cell_key?: string;
-              source: string;
-            } => cell !== null);
+            .filter(
+              (
+                cell: unknown
+              ): cell is {
+                cell_id: string;
+                cell_index: number;
+                template_cell_key?: string;
+                source: string;
+              } => cell !== null
+            );
           currentContent = currentCellSnapshots
             .map(cell => cell.source)
             .join('\n\n');
@@ -505,10 +548,14 @@ export class FocusChangeAutoSaveTracker {
         this._stepCounters.set(context.path, 1);
       }
 
-      const normalize = (text: string): string => (text.endsWith('\n') ? text : text + '\n');
+      const normalize = (text: string): string =>
+        text.endsWith('\n') ? text : text + '\n';
 
       const prevContent = this._previousContent.get(context.path) ?? '';
-      const changes = diffLines(normalize(prevContent), normalize(currentContent));
+      const changes = diffLines(
+        normalize(prevContent),
+        normalize(currentContent)
+      );
 
       const diffBody = changes
         .map(part => {
@@ -535,8 +582,12 @@ export class FocusChangeAutoSaveTracker {
         const cellSnapshotLogPath = `internal_diff_logs/cell_versions/${safeFileName}.jsonl`;
         let prevInternalLog = '';
         try {
-          const internalLogModel = await this._docManager.services.contents.get(internalDiffLogPath);
-          if (internalLogModel.format === 'text' && typeof internalLogModel.content === 'string') {
+          const internalLogModel =
+            await this._docManager.services.contents.get(internalDiffLogPath);
+          if (
+            internalLogModel.format === 'text' &&
+            typeof internalLogModel.content === 'string'
+          ) {
             prevInternalLog = internalLogModel.content;
           }
         } catch (err) {
@@ -555,8 +606,12 @@ export class FocusChangeAutoSaveTracker {
 
         let prevSnapshotLog = '';
         try {
-          const snapshotLogModel = await this._docManager.services.contents.get(snapshotLogPath);
-          if (snapshotLogModel.format === 'text' && typeof snapshotLogModel.content === 'string') {
+          const snapshotLogModel =
+            await this._docManager.services.contents.get(snapshotLogPath);
+          if (
+            snapshotLogModel.format === 'text' &&
+            typeof snapshotLogModel.content === 'string'
+          ) {
             prevSnapshotLog = snapshotLogModel.content;
           }
         } catch (err) {
@@ -582,12 +637,19 @@ export class FocusChangeAutoSaveTracker {
         if (currentCellSnapshots.length > 0) {
           let previousCellSnapshotLog = '';
           try {
-            const cellSnapshotLogModel = await this._docManager.services.contents.get(cellSnapshotLogPath);
-            if (cellSnapshotLogModel.format === 'text' && typeof cellSnapshotLogModel.content === 'string') {
+            const cellSnapshotLogModel =
+              await this._docManager.services.contents.get(cellSnapshotLogPath);
+            if (
+              cellSnapshotLogModel.format === 'text' &&
+              typeof cellSnapshotLogModel.content === 'string'
+            ) {
               previousCellSnapshotLog = cellSnapshotLogModel.content;
             }
           } catch (err) {
-            console.log('No previous cell snapshot log found:', cellSnapshotLogPath);
+            console.log(
+              'No previous cell snapshot log found:',
+              cellSnapshotLogPath
+            );
           }
 
           const cellSnapshotEntry = JSON.stringify({
@@ -622,7 +684,9 @@ export class FocusChangeAutoSaveTracker {
       if (context) {
         // Use the same queue as focus-out saves so concurrent triggers cannot
         // write duplicate or out-of-order diff records.
-        void this.queueOperation(context.path, () => this.saveDocumentWidget(widget));
+        void this.queueOperation(context.path, () =>
+          this.saveDocumentWidget(widget)
+        );
       }
     }
   }
@@ -647,9 +711,12 @@ export class FocusChangeAutoSaveTracker {
    * Activate or deactivate the tracking, with new settings.
    */
   updateSettings(trackerSetting: IFocusChangeAutoSaveSettings): void {
-    this._excludeMatcher = new Minimatch(`{${trackerSetting.exclude.join(',')}}`, {
-      nocomment: true
-    });
+    this._excludeMatcher = new Minimatch(
+      `{${trackerSetting.exclude.join(',')}}`,
+      {
+        nocomment: true
+      }
+    );
 
     this._debug_printer('_excludeMatcher: ', this._excludeMatcher);
     debug_printer(true, 'Setting active state to: ', trackerSetting.active);
