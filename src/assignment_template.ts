@@ -372,7 +372,10 @@ export class AssignmentTemplateController {
     const metadata = {
       deletable: false,
       editable: false,
-      tags: ['student-name', NAME_TAG, 'identity-confirmed', 'protected-cell']
+      tags: ['student-name', NAME_TAG, 'identity-confirmed', 'protected-cell'],
+      // Preserve the same stable identity after converting the entry cell to
+      // locked Markdown. Analytics must never fall back to a positional label.
+      analytics_cell_key: 'student_name'
     };
     const content: nbformat.IMarkdownCell = {
       cell_type: 'markdown',
@@ -380,8 +383,13 @@ export class AssignmentTemplateController {
       source: `## Student: ${this._escapeMarkdown(studentName)}\n\n_Name confirmed and notebook renamed._`
     };
 
+    // The replacement has a new Jupyter cell ID. Remove the original ID from
+    // the initial-cell allow-list so a stale reconciliation cannot restore it
+    // later as a duplicate cell at the end of the notebook.
+    state.initialCellIds.delete(cell.id);
     model.sharedModel.deleteCell(index);
     const sharedCell = model.sharedModel.insertCell(index, content);
+    state.initialCellIds.add(sharedCell.id);
     state.protectedCells.delete(cell.id);
     state.protectedCells.set(sharedCell.id, {
       id: sharedCell.id,
