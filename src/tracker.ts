@@ -54,9 +54,9 @@ export class FocusChangeAutoSaveTracker {
   /** Debug printer */
   private _debug_printer: (...args: any[]) => void;
 
-  /** cache of last known content per path */
+  /** cache of last known content per path, restored from snapshots after reload */
   private _previousContent = new Map<string, string>();
-  /** save counters per path */
+  /** save counters per path, restored from snapshots after reload */
   private _stepCounters: Map<string, number> = new Map();
 
   // handle async operations by queuing them
@@ -422,6 +422,74 @@ export class FocusChangeAutoSaveTracker {
     return this.getCellLocation(widget, notebook.activeCellIndex);
   }
 
+  /**
+   * Restore notebook save state after a browser or extension reload.
+   *
+   * The frontend cache is intentionally temporary, but the structured cell
+   * snapshots are persisted with the notebook. Reconstructing their latest
+   * source prevents a reload from comparing the whole notebook with empty
+   * content and writing another misleading ``initial save`` entry.
+   */
+  private async restorePersistedSaveState(path: string): Promise<void> {
+    if (this._previousContent.has(path)) {
+      return;
+    }
+
+    const safeFileName = path.replace(/\//g, '__');
+    const snapshotPath = `internal_diff_logs/cell_versions/${safeFileName}.jsonl`;
+    try {
+      const snapshotModel =
+        await this._docManager.services.contents.get(snapshotPath);
+      if (
+        snapshotModel.format !== 'text' ||
+        typeof snapshotModel.content !== 'string'
+      ) {
+        throw new Error('Cell snapshots are not stored as text.');
+      }
+
+      let snapshotCount = 0;
+      let latestSources: string[] | undefined;
+      for (const line of snapshotModel.content.split('\n')) {
+        if (!line.trim()) {
+          continue;
+        }
+        try {
+          const snapshot = JSON.parse(line) as { cells?: unknown };
+          if (!Array.isArray(snapshot.cells)) {
+            continue;
+          }
+          const sources = snapshot.cells
+            .map(cell => {
+              if (
+                cell !== null &&
+                typeof cell === 'object' &&
+                typeof (cell as { source?: unknown }).source === 'string'
+              ) {
+                return (cell as { source: string }).source;
+              }
+              return undefined;
+            })
+            .filter((source): source is string => source !== undefined);
+          snapshotCount += 1;
+          latestSources = sources;
+        } catch {
+          // Ignore an incomplete final line, for example after an interrupted save.
+        }
+      }
+
+      if (latestSources !== undefined && snapshotCount > 0) {
+        this._previousContent.set(path, latestSources.join('\n\n'));
+        this._stepCounters.set(path, snapshotCount + 1);
+        return;
+      }
+    } catch {
+      // A notebook without a prior snapshot genuinely needs an initial save.
+    }
+
+    this._previousContent.set(path, '');
+    this._stepCounters.set(path, 1);
+  }
+
   public async executionEventLogger(
     success: boolean,
     cell: Cell
@@ -543,10 +611,7 @@ export class FocusChangeAutoSaveTracker {
         currentContent = model.toString();
       }
 
-      if (!this._previousContent.has(context.path)) {
-        this._previousContent.set(context.path, '');
-        this._stepCounters.set(context.path, 1);
-      }
+      await this.restorePersistedSaveState(context.path);
 
       const normalize = (text: string): string =>
         text.endsWith('\n') ? text : text + '\n';
