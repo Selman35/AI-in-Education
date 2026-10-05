@@ -31,10 +31,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate all notebook analytics reports and plots."
     )
-    parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        help="Changes directory to analyse; overrides --log-root.",
+    )
+    parser.add_argument(
+        "--log-root",
+        type=Path,
+        help="Logging root containing changes/, versions/, and cell_versions/.",
+    )
     parser.add_argument("--analytics-dir", type=Path, default=DEFAULT_ANALYTICS_DIR)
     parser.add_argument("--plots-dir", type=Path, default=DEFAULT_PLOTS_DIR)
     args = parser.parse_args()
+
+    if args.log_dir and args.log_root:
+        parser.error("Use either --log-dir or --log-root, not both.")
+    args.log_dir = args.log_dir or (
+        args.log_root / "changes" if args.log_root else DEFAULT_LOG_DIR
+    )
 
     args.analytics_dir.mkdir(parents=True, exist_ok=True)
     args.plots_dir.mkdir(parents=True, exist_ok=True)

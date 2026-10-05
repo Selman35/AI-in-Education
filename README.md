@@ -115,7 +115,7 @@ saved code changes. A paste matching the latest copy or cut from the same
 notebook is also recorded as an internal clipboard transfer; clipboard text is
 not written to disk.
 
-The files are written locally under:
+During local development, the files are written under:
 
 ```text
 internal_diff_logs/
@@ -130,6 +130,35 @@ These folders can contain student work and activity data. They are ignored by
 Git, but `.gitignore` does not restrict access. Use filesystem and Jupyter
 server permissions if students must not be able to view or modify the data.
 
+### JupyterHub deployment layout
+
+For the pilot deployment, the extension uses the authenticated JupyterHub
+username when JupyterLab exposes it as `hubUser`. For example, user `aaa100`
+produces shared-category log files such as:
+
+```text
+logs/
+├── changes/aaa100__pilot_study_1.ipynb.log
+├── versions/aaa100__pilot_study_1.ipynb.log
+└── cell_versions/aaa100__pilot_study_1.ipynb.jsonl
+```
+
+IT should map this `logs/` root to
+`/srv/scistor/ai_in_education/logs/`. The student notebook itself belongs in
+that student's separate workspace, for example
+`/srv/scistor/ai_in_education/students/aaa100/pilot_study_1.ipynb`.
+
+To provision that notebook as research staff, run:
+
+```bash
+python tools/create_pilot_notebook.py participant_001 \
+  --student-id aaa100 \
+  --student-workspaces-root /srv/scistor/ai_in_education/students
+```
+
+The server must provide `hubUser`, allow the extension to create the three log
+category folders, and restrict student access to the shared `logs/` root.
+
 ### Create the analytics reports
 
 After notebook activity has been recorded, run the following from the
@@ -140,17 +169,26 @@ conda activate jupyterlab_autosave_on_focus_change-demo
 python tools/generate_analytics_and_plots.py
 ```
 
+For the JupyterHub layout, use the logging root directly:
+
+```bash
+python tools/generate_analytics_and_plots.py \
+  --log-root /srv/scistor/ai_in_education/logs \
+  --analytics-dir /srv/scistor/ai_in_education/analytics \
+  --plots-dir /srv/scistor/ai_in_education/plots
+```
+
 This command regenerates the reports below and all available plots:
 
-| File | What it contains |
-| --- | --- |
-| `student_analytics.csv` | One overall analytics row per notebook. |
-| `cell_mapping.csv` | Readable cell labels and their logged references. |
-| `cell_execution_summary.csv` | Execution, success, and error counts for each cell. |
-| `idle_events.csv` | Each detected period of inactivity. |
-| `active_sessions.csv` | Each detected active editing session. |
-| `clipboard_events.csv` | One row per copy, cut, or paste event. |
-| `clipboard_transfers.csv` | Confirmed same-notebook copy/cut-to-paste transfers. |
+| File                         | What it contains                                     |
+| ---------------------------- | ---------------------------------------------------- |
+| `student_analytics.csv`      | One overall analytics row per notebook.              |
+| `cell_mapping.csv`           | Readable cell labels and their logged references.    |
+| `cell_execution_summary.csv` | Execution, success, and error counts for each cell.  |
+| `idle_events.csv`            | Each detected period of inactivity.                  |
+| `active_sessions.csv`        | Each detected active editing session.                |
+| `clipboard_events.csv`       | One row per copy, cut, or paste event.               |
+| `clipboard_transfers.csv`    | Confirmed same-notebook copy/cut-to-paste transfers. |
 
 Reports are written to `internal_diff_logs/analytics/`. Images are written to
 `internal_diff_logs/plots/`.

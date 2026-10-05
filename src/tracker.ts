@@ -3,6 +3,7 @@ import { IDocumentManager } from '@jupyterlab/docmanager';
 
 import { INotebookTracker } from '@jupyterlab/notebook';
 import { IEditorTracker } from '@jupyterlab/fileeditor';
+import { PageConfig } from '@jupyterlab/coreutils';
 
 import { Widget } from '@lumino/widgets';
 import { toArray } from '@lumino/algorithm';
@@ -68,6 +69,7 @@ export class FocusChangeAutoSaveTracker {
   >();
   private _periodicSaveTimer: number | undefined;
   private _lastEditLogTime = new Map<string, number>();
+  private _loggingDirectoryPromises = new Map<string, Promise<void>>();
 
   /**
    * Initialization of FocusChangeAutoSaveTracker.
@@ -203,8 +205,14 @@ export class FocusChangeAutoSaveTracker {
     logEntry: string,
     context: DocumentRegistry.IContext<DocumentRegistry.IModel>
   ): Promise<void> {
-    const safeFileName = context.path.replace(/\//g, '__');
-    const internalDiffLogPath = `internal_diff_logs/changes/${safeFileName}.log`;
+    const logKey = this.getLogKey(context);
+    try {
+      await this.ensureLoggingDirectories();
+    } catch (err) {
+      console.error('Failed to prepare logging directories:', err);
+      return;
+    }
+    const internalDiffLogPath = this.getLogPath('changes', logKey, 'log');
 
     let prevLog = '';
     try {
@@ -224,6 +232,121 @@ export class FocusChangeAutoSaveTracker {
         content: prevLog + logEntry
       });
     } catch (err) {}
+  }
+
+  /**
+   * Return the authenticated JupyterHub user when the server exposes it in
+   * JupyterLab page configuration. Invalid values are never used in paths.
+   */
+  private getJupyterHubUser(): string | undefined {
+    const configuredUser = PageConfig.getOption('hubUser');
+    const hubUser =
+      typeof configuredUser === 'string' ? configuredUser.trim() : '';
+    if (!hubUser || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(hubUser)) {
+      return undefined;
+    }
+    return hubUser;
+  }
+
+  /**
+   * Use the shared production log root only for an authenticated JupyterHub
+   * session. Local development keeps the established internal_diff_logs root.
+   */
+  private getLoggingRoot(): string {
+    return this.getJupyterHubUser() ? 'logs' : 'internal_diff_logs';
+  }
+
+  private getLogPath(
+    category: 'changes' | 'versions' | 'cell_versions',
+    logKey: string,
+    extension: 'log' | 'jsonl'
+  ): string {
+    return `${this.getLoggingRoot()}/${category}/${logKey}.${extension}`;
+  }
+
+  /** Create the shared category folders once for the active logging root. */
+  private async ensureLoggingDirectories(): Promise<void> {
+    const root = this.getLoggingRoot();
+    const existing = this._loggingDirectoryPromises.get(root);
+    if (existing) {
+      return existing;
+    }
+
+    const createDirectories = async () => {
+      for (const directory of [
+        root,
+        `${root}/changes`,
+        `${root}/versions`,
+        `${root}/cell_versions`
+      ]) {
+        try {
+          await this._docManager.services.contents.get(directory);
+        } catch {
+          await this._docManager.services.contents.save(directory, {
+            type: 'directory',
+            format: 'json',
+            content: []
+          });
+        }
+      }
+    };
+
+    const pending = createDirectories();
+    this._loggingDirectoryPromises.set(root, pending);
+    try {
+      await pending;
+    } catch (err) {
+      this._loggingDirectoryPromises.delete(root);
+      throw err;
+    }
+  }
+
+  /**
+   * Return a stable log key for provisioned assignment notebooks.
+   *
+   * JupyterHub logs are grouped by the authenticated user and assignment ID.
+   * Local logs retain the assignment-instance key so a notebook rename does
+   * not split one participant's local-development data.
+   */
+  private getLogKey(
+    context: DocumentRegistry.IContext<DocumentRegistry.IModel>
+  ): string {
+    const notebookPanel = this._notebookTracker.find(
+      panel => this._docManager.contextForWidget(panel)?.path === context.path
+    );
+    const analyticsMetadata =
+      notebookPanel?.model?.getMetadata('student_analytics');
+    const assignmentInstanceId =
+      analyticsMetadata && typeof analyticsMetadata === 'object'
+        ? (analyticsMetadata as Record<string, unknown>).assignment_instance_id
+        : undefined;
+    const assignmentId =
+      analyticsMetadata && typeof analyticsMetadata === 'object'
+        ? (analyticsMetadata as Record<string, unknown>).assignment_id
+        : undefined;
+    const hubUser = this.getJupyterHubUser();
+
+    if (hubUser && typeof assignmentId === 'string' && assignmentId.trim()) {
+      const safeAssignmentId = assignmentId
+        .trim()
+        .replace(/[^A-Za-z0-9._-]/g, '_');
+      return `${hubUser}__${safeAssignmentId}.ipynb`;
+    }
+
+    if (
+      typeof assignmentInstanceId === 'string' &&
+      assignmentInstanceId.trim()
+    ) {
+      const safeInstanceId = assignmentInstanceId
+        .trim()
+        .replace(/[^A-Za-z0-9._-]/g, '_');
+      return hubUser
+        ? `${hubUser}__${safeInstanceId}.ipynb`
+        : `${safeInstanceId}.ipynb`;
+    }
+
+    const safePath = context.path.replace(/\//g, '__');
+    return hubUser ? `${hubUser}__${safePath}` : safePath;
   }
 
   /**
@@ -430,13 +553,12 @@ export class FocusChangeAutoSaveTracker {
    * source prevents a reload from comparing the whole notebook with empty
    * content and writing another misleading ``initial save`` entry.
    */
-  private async restorePersistedSaveState(path: string): Promise<void> {
-    if (this._previousContent.has(path)) {
+  private async restorePersistedSaveState(logKey: string): Promise<void> {
+    if (this._previousContent.has(logKey)) {
       return;
     }
 
-    const safeFileName = path.replace(/\//g, '__');
-    const snapshotPath = `internal_diff_logs/cell_versions/${safeFileName}.jsonl`;
+    const snapshotPath = this.getLogPath('cell_versions', logKey, 'jsonl');
     try {
       const snapshotModel =
         await this._docManager.services.contents.get(snapshotPath);
@@ -478,16 +600,16 @@ export class FocusChangeAutoSaveTracker {
       }
 
       if (latestSources !== undefined && snapshotCount > 0) {
-        this._previousContent.set(path, latestSources.join('\n\n'));
-        this._stepCounters.set(path, snapshotCount + 1);
+        this._previousContent.set(logKey, latestSources.join('\n\n'));
+        this._stepCounters.set(logKey, snapshotCount + 1);
         return;
       }
     } catch {
       // A notebook without a prior snapshot genuinely needs an initial save.
     }
 
-    this._previousContent.set(path, '');
-    this._stepCounters.set(path, 1);
+    this._previousContent.set(logKey, '');
+    this._stepCounters.set(logKey, 1);
   }
 
   public async executionEventLogger(
@@ -530,27 +652,12 @@ export class FocusChangeAutoSaveTracker {
       return;
     }
 
-    // ensure the folders for saving the files exist in the system
-    const ensureDirExists = async (dirPath: string) => {
-      try {
-        await this._docManager.services.contents.get(dirPath);
-      } catch {
-        try {
-          await this._docManager.services.contents.save(dirPath, {
-            type: 'directory',
-            format: 'json',
-            content: []
-          });
-        } catch (err) {
-          console.error('Failed to create directory:', dirPath, err);
-        }
-      }
-    };
-
-    await ensureDirExists('internal_diff_logs');
-    await ensureDirExists('internal_diff_logs/changes');
-    await ensureDirExists('internal_diff_logs/versions');
-    await ensureDirExists('internal_diff_logs/cell_versions');
+    try {
+      await this.ensureLoggingDirectories();
+    } catch (err) {
+      console.error('Failed to prepare logging directories:', err);
+      return;
+    }
 
     if (
       this._excludeMatcher.match(context.path) === false &&
@@ -611,12 +718,13 @@ export class FocusChangeAutoSaveTracker {
         currentContent = model.toString();
       }
 
-      await this.restorePersistedSaveState(context.path);
+      const logKey = this.getLogKey(context);
+      await this.restorePersistedSaveState(logKey);
 
       const normalize = (text: string): string =>
         text.endsWith('\n') ? text : text + '\n';
 
-      const prevContent = this._previousContent.get(context.path) ?? '';
+      const prevContent = this._previousContent.get(logKey) ?? '';
       const changes = diffLines(
         normalize(prevContent),
         normalize(currentContent)
@@ -635,16 +743,19 @@ export class FocusChangeAutoSaveTracker {
         .join('\n');
 
       if (diffBody.trim() !== '') {
-        const step = this._stepCounters.get(context.path) ?? 1;
+        const step = this._stepCounters.get(logKey) ?? 1;
         const location = this.getChangeLocation(widget);
         const headerLabel = step === 1 ? 'initial save' : `save ${step}`;
         const header = `[${timestamp}]${location ? location + ' ' : ''}[${headerLabel}]`;
         const logEntry = `${header}\n${diffBody}\n`;
 
-        const safeFileName = context.path.replace(/\//g, '__');
-        const internalDiffLogPath = `internal_diff_logs/changes/${safeFileName}.log`;
-        const snapshotLogPath = `internal_diff_logs/versions/${safeFileName}.log`;
-        const cellSnapshotLogPath = `internal_diff_logs/cell_versions/${safeFileName}.jsonl`;
+        const internalDiffLogPath = this.getLogPath('changes', logKey, 'log');
+        const snapshotLogPath = this.getLogPath('versions', logKey, 'log');
+        const cellSnapshotLogPath = this.getLogPath(
+          'cell_versions',
+          logKey,
+          'jsonl'
+        );
         let prevInternalLog = '';
         try {
           const internalLogModel =
@@ -732,10 +843,10 @@ export class FocusChangeAutoSaveTracker {
           }
         }
 
-        this._stepCounters.set(context.path, step + 1);
+        this._stepCounters.set(logKey, step + 1);
       }
 
-      this._previousContent.set(context.path, currentContent);
+      this._previousContent.set(logKey, currentContent);
 
       await context.save();
       this._debug_printer('Saved: ', context.path);

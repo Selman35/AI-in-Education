@@ -4609,6 +4609,7 @@ __metadata:
     "@carlosjeurissen/stylelint-csstree-validator": ^3.1.0
     "@jupyterlab/application": ^4.2.5
     "@jupyterlab/builder": ^4.2.5
+    "@jupyterlab/coreutils": ^6.2.5
     "@jupyterlab/docmanager": ^4.2.5
     "@jupyterlab/fileeditor": ^4.2.5
     "@jupyterlab/mainmenu": ^4.2.5
