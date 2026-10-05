@@ -132,6 +132,9 @@ server permissions if students must not be able to view or modify the data.
 
 ### JupyterHub deployment layout
 
+For the server-facing deployment requirements and staging acceptance check, see
+[JupyterHub pilot deployment](docs/JUPYTERHUB_DEPLOYMENT.md).
+
 For the pilot deployment, the extension uses the authenticated JupyterHub
 username when JupyterLab exposes it as `hubUser`. For example, user `aaa100`
 produces shared-category log files such as:
