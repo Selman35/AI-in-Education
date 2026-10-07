@@ -135,20 +135,30 @@ server permissions if students must not be able to view or modify the data.
 For the server-facing deployment requirements and staging acceptance check, see
 [JupyterHub pilot deployment](docs/JUPYTERHUB_DEPLOYMENT.md).
 
-For the pilot deployment, the extension uses the authenticated JupyterHub
-username when JupyterLab exposes it as `hubUser`. For example, user `aaa100`
-produces shared-category log files such as:
+For the pilot deployment, IT must centrally set the extension's **Logging root
+directory** (`loggingRoot`) setting to:
 
 ```text
-logs/
+/srv/scistor/ai_in_education/logs
+```
+
+This setting should be locked so students cannot redirect or change the
+research-log location. Filesystem permissions must separately prevent students
+from viewing or changing the research data. The local default remains
+`internal_diff_logs/`.
+
+When JupyterLab exposes the authenticated username as `hubUser`, the extension
+uses it in the filename. For example, user `aaa100` produces:
+
+```text
+/srv/scistor/ai_in_education/logs/
 ├── changes/aaa100__pilot_study_1.ipynb.log
 ├── versions/aaa100__pilot_study_1.ipynb.log
 └── cell_versions/aaa100__pilot_study_1.ipynb.jsonl
 ```
 
-IT should map this `logs/` root to
-`/srv/scistor/ai_in_education/logs/`. The student notebook itself belongs in
-that student's separate workspace, for example
+The student notebook itself belongs in that student's separate workspace, for
+example
 `/srv/scistor/ai_in_education/students/aaa100/pilot_study_1.ipynb`.
 
 To provision that notebook as research staff, run:
@@ -160,7 +170,7 @@ python tools/create_pilot_notebook.py participant_001 \
 ```
 
 The server must provide `hubUser`, allow the extension to create the three log
-category folders, and restrict student access to the shared `logs/` root.
+category folders, and restrict student access to the shared log root.
 
 ### Create the analytics reports
 
