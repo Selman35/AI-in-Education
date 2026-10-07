@@ -22,16 +22,22 @@ Student notebooks are provisioned separately from research logs:
 For a user authenticated as `aaa100`, the extension writes these files:
 
 ```text
-logs/changes/aaa100__pilot_study_1.ipynb.log
-logs/versions/aaa100__pilot_study_1.ipynb.log
-logs/cell_versions/aaa100__pilot_study_1.ipynb.jsonl
+/srv/scistor/ai_in_education/logs/changes/aaa100__pilot_study_1.ipynb.log
+/srv/scistor/ai_in_education/logs/versions/aaa100__pilot_study_1.ipynb.log
+/srv/scistor/ai_in_education/logs/cell_versions/aaa100__pilot_study_1.ipynb.jsonl
 ```
 
-The logical `logs/` path must resolve to:
+## Required extension setting
+
+IT should centrally configure the extension's `loggingRoot` setting as:
 
 ```text
 /srv/scistor/ai_in_education/logs/
 ```
+
+The setting should be locked so students cannot redirect or change the logging
+destination. This direct path replaces the previous requirement to mount or map
+a `logs/` directory into each JupyterHub environment.
 
 ## Extension behaviour
 
@@ -40,27 +46,27 @@ page configuration value `hubUser`. It validates the value before including it
 in a filename. The username is not requested from the student and is not read
 from a notebook cell or notebook filename.
 
-The extension creates `logs/`, `logs/changes/`, `logs/versions/`, and
-`logs/cell_versions/` when they do not already exist. It writes chronological
+The extension creates `changes/`, `versions/`, and `cell_versions/` under the
+configured logging root when they do not already exist. It writes chronological
 activity/diff logs, human-readable source snapshots, and structured cell
 snapshots in the existing repository formats.
 
-Outside JupyterHub, when `hubUser` is unavailable, the extension continues to
-use `internal_diff_logs/` for local development.
+Outside JupyterHub, the setting defaults to `internal_diff_logs/` for local
+development.
 
 ## Requirements to confirm before deployment
 
 - JupyterLab exposes the authenticated username as `hubUser`.
 - Student workspaces are provisioned under `students/<vunetid>/`.
-- The JupyterLab Contents API resolves the extension's logical `logs/` path to
-  `/srv/scistor/ai_in_education/logs/`.
+- The extension's `loggingRoot` setting is centrally configured as
+  `/srv/scistor/ai_in_education/logs/` and locked for students.
 - The extension can create and append files in the three log categories.
 - Students can work normally in their own workspace but cannot browse, edit, or
   delete research logs.
 - Authorised researchers can access the raw logs and generated analytics.
 
 The current extension writes through JupyterLab's Contents API. The staging
-deployment must therefore verify that the chosen storage and permission model
+deployment should therefore verify that the chosen storage and permission model
 supports logging without exposing research data to students.
 
 ## Notebook provisioning

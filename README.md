@@ -128,14 +128,14 @@ internal_diff_logs/
 
 These folders can contain student work and activity data. They are ignored by
 Git, but `.gitignore` does not restrict access. Use filesystem and Jupyter
-server permissions if students must not be able to view or modify the data.
+server permissions where students should not be able to view or modify the data.
 
 ### JupyterHub deployment layout
 
 For the server-facing deployment requirements and staging acceptance check, see
 [JupyterHub pilot deployment](docs/JUPYTERHUB_DEPLOYMENT.md).
 
-For the pilot deployment, IT must centrally set the extension's **Logging root
+For the pilot deployment, IT should centrally set the extension's **Logging root
 directory** (`loggingRoot`) setting to:
 
 ```text
@@ -143,7 +143,7 @@ directory** (`loggingRoot`) setting to:
 ```
 
 This setting should be locked so students cannot redirect or change the
-research-log location. Filesystem permissions must separately prevent students
+research-log location. Filesystem permissions should separately prevent students
 from viewing or changing the research data. The local default remains
 `internal_diff_logs/`.
 
@@ -169,7 +169,7 @@ python tools/create_pilot_notebook.py participant_001 \
   --student-workspaces-root /srv/scistor/ai_in_education/students
 ```
 
-The server must provide `hubUser`, allow the extension to create the three log
+The server should provide `hubUser`, allow the extension to create the three log
 category folders, and restrict student access to the shared log root.
 
 ### Create the analytics reports
