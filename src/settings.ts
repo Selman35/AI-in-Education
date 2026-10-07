@@ -20,6 +20,8 @@ export interface IFocusChangeAutoSaveSettings {
   saveOnCellFocusChange: boolean;
   /** Seconds between periodic saves; zero disables periodic saves. */
   autosaveIntervalSeconds: number;
+  /** Root directory for changes, versions, and cell-version logs. */
+  loggingRoot: string;
 }
 
 /**
@@ -81,11 +83,17 @@ export class FocusChangeAutoSaveSettings {
       .composite as boolean;
     const autosaveIntervalSeconds = setting.get('autosaveIntervalSeconds')
       .composite as number;
+    const configuredLoggingRoot = setting.get('loggingRoot').composite;
+    const loggingRoot =
+      typeof configuredLoggingRoot === 'string' && configuredLoggingRoot.trim()
+        ? configuredLoggingRoot.trim()
+        : 'internal_diff_logs';
     return {
       active: this._active,
       exclude,
       saveOnCellFocusChange,
-      autosaveIntervalSeconds
+      autosaveIntervalSeconds,
+      loggingRoot
     };
   }
 

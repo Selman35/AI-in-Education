@@ -32,6 +32,12 @@
       "description": "Use the normal focus-change save and logging path for dirty, non-excluded documents at this interval. Set to 0 to disable periodic autosave.",
       "default": 30,
       "minimum": 0
+    },
+    "loggingRoot": {
+      "type": "string",
+      "title": "Logging root directory",
+      "description": "Root directory for changes, versions, and cell-version logs. The local default is internal_diff_logs; JupyterHub administrators can centrally set an absolute research-log path.",
+      "default": "internal_diff_logs"
     }
   }
 }

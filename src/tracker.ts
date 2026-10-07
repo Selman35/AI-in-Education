@@ -70,6 +70,7 @@ export class FocusChangeAutoSaveTracker {
   private _periodicSaveTimer: number | undefined;
   private _lastEditLogTime = new Map<string, number>();
   private _loggingDirectoryPromises = new Map<string, Promise<void>>();
+  private _loggingRoot = 'internal_diff_logs';
 
   /**
    * Initialization of FocusChangeAutoSaveTracker.
@@ -248,12 +249,8 @@ export class FocusChangeAutoSaveTracker {
     return hubUser;
   }
 
-  /**
-   * Use the shared production log root only for an authenticated JupyterHub
-   * session. Local development keeps the established internal_diff_logs root.
-   */
   private getLoggingRoot(): string {
-    return this.getJupyterHubUser() ? 'logs' : 'internal_diff_logs';
+    return this._loggingRoot;
   }
 
   private getLogPath(
@@ -887,6 +884,8 @@ export class FocusChangeAutoSaveTracker {
    * Activate or deactivate the tracking, with new settings.
    */
   updateSettings(trackerSetting: IFocusChangeAutoSaveSettings): void {
+    this._loggingRoot =
+      trackerSetting.loggingRoot.replace(/\/+$/, '') || 'internal_diff_logs';
     this._excludeMatcher = new Minimatch(
       `{${trackerSetting.exclude.join(',')}}`,
       {
