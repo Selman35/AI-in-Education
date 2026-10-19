@@ -9,8 +9,10 @@ internal_diff_logs/
 logs/
 .ipynb_checkpoints/
 *.ipynb
-!templates/initial_assignment_template.ipynb
 !templates/pilot_text_analyser_template.ipynb
+
+# Legacy local template with completed answers; never distribute or commit it.
+templates/initial_assignment_template.ipynb
 .virtual_documents/
 __pycache__/
 *.py[cod]
