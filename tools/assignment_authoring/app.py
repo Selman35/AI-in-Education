@@ -63,28 +63,38 @@ def reviewed_cell_from_widget(draft_cell: dict[str, Any], st: Any) -> dict[str, 
         value=draft_cell["proposed_section"],
         key=f"{widget_prefix}_section",
     )
-    permissions = {
-        "source_editable": st.checkbox(
-            "Students may edit source",
-            value=default_policy["source_editable"],
-            key=f"{widget_prefix}_source_editable",
-        ),
-        "executable": st.checkbox(
-            "Students may run this cell",
-            value=default_policy["executable"],
-            key=f"{widget_prefix}_executable",
-        ),
-        "deletable": st.checkbox(
-            "Students may delete this original cell",
-            value=default_policy["deletable"],
-            key=f"{widget_prefix}_deletable",
-        ),
-        "movable": st.checkbox(
-            "Students may move this original cell",
-            value=default_policy["movable"],
-            key=f"{widget_prefix}_movable",
-        ),
-    }
+    permissions = default_policy
+    if st.checkbox(
+        "Show advanced permissions",
+        value=False,
+        key=f"{widget_prefix}_show_advanced_permissions",
+        help="Roles already provide the usual permissions. Change these only for an exception.",
+    ):
+        st.caption(
+            "These settings override the permissions normally supplied by the selected role."
+        )
+        permissions = {
+            "source_editable": st.checkbox(
+                "Students may edit source",
+                value=default_policy["source_editable"],
+                key=f"{widget_prefix}_source_editable",
+            ),
+            "executable": st.checkbox(
+                "Students may run this cell",
+                value=default_policy["executable"],
+                key=f"{widget_prefix}_executable",
+            ),
+            "deletable": st.checkbox(
+                "Students may delete this original cell",
+                value=default_policy["deletable"],
+                key=f"{widget_prefix}_deletable",
+            ),
+            "movable": st.checkbox(
+                "Students may move this original cell",
+                value=default_policy["movable"],
+                key=f"{widget_prefix}_movable",
+            ),
+        }
     return {
         "source_cell_id": draft_cell["source_cell_id"],
         "position": position,
@@ -125,11 +135,14 @@ def main() -> None:
             """
 1. Upload an existing Jupyter notebook.
 2. Open each cell review and read the complete original cell content.
-3. Confirm or change its role, stable analytics key, section, and student permissions.
+3. Confirm or change its role, stable analytics key, and section.
 4. Download the reviewed configuration once there are no validation errors.
 
 The uploaded notebook stays unchanged. This step only creates a configuration
 file for later publishing and student provisioning.
+
+**Roles set the normal student permissions automatically.** Use **Show advanced
+permissions** only when one cell needs behaviour that differs from its role.
             """
         )
 
