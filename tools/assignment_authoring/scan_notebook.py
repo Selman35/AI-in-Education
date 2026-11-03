@@ -36,7 +36,11 @@ def source_text(cell: dict[str, Any]) -> str:
 def slugify(value: str, fallback: str) -> str:
     """Create a stable, metadata-safe identifier fragment."""
     slug = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
-    return slug or fallback
+    slug = slug or fallback
+    # Analytics keys are intentionally required to start with a letter. Many
+    # assignments use headings such as "1. Introduction", so preserve the
+    # useful number while making the generated key valid without teacher work.
+    return slug if slug[0].isalpha() else f"section_{slug}"
 
 
 def markdown_heading(source: str) -> str | None:
@@ -111,9 +115,7 @@ def policy_for_role(role: str) -> dict[str, bool]:
 
 def build_reviewed_config(
     draft: dict[str, Any],
-    course_id: str,
     course_name: str,
-    assignment_id: str,
     assignment_name: str,
     allow_extra_cells: bool,
     reviewed_cells: list[dict[str, Any]],
@@ -127,9 +129,12 @@ def build_reviewed_config(
         "schema_version": CONFIG_SCHEMA_VERSION,
         "status": "teacher_reviewed_not_published",
         "source_notebook": draft["source_notebook"],
-        "course": {"id": course_id.strip(), "name": course_name.strip()},
+        "course": {
+            "id": slugify(course_name, "course"),
+            "name": course_name.strip(),
+        },
         "assignment": {
-            "id": assignment_id.strip(),
+            "id": slugify(assignment_name, "assignment"),
             "name": assignment_name.strip(),
         },
         "structure": {"allow_extra_cells": bool(allow_extra_cells)},
@@ -173,6 +178,7 @@ def build_draft_config(notebook: dict[str, Any], source_notebook: str) -> dict[s
                 "position": position,
                 "cell_type": cell.get("cell_type", "raw"),
                 "source_preview": source_text(cell).strip().replace("\n", " ")[:160],
+                "source": source_text(cell),
                 "proposed_key": key,
                 "proposed_role": role,
                 "proposed_section": section,

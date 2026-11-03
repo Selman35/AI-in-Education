@@ -96,6 +96,14 @@ def reviewed_cell_from_widget(draft_cell: dict[str, Any], st: Any) -> dict[str, 
     }
 
 
+def display_cell_source(draft_cell: dict[str, Any], st: Any) -> None:
+    """Show the complete original cell source before its review controls."""
+    source = draft_cell["source"] or "(empty cell)"
+    language = "python" if draft_cell["cell_type"] == "code" else "markdown"
+    st.caption("Original cell content")
+    st.code(source, language=language)
+
+
 def main() -> None:
     try:
         import streamlit as st
@@ -112,6 +120,19 @@ def main() -> None:
         "Step 2: review deterministic suggestions locally. This app does not modify notebooks or publish assignments."
     )
 
+    with st.expander("How to use this page", expanded=True):
+        st.markdown(
+            """
+1. Upload an existing Jupyter notebook.
+2. Open each cell review and read the complete original cell content.
+3. Confirm or change its role, stable analytics key, section, and student permissions.
+4. Download the reviewed configuration once there are no validation errors.
+
+The uploaded notebook stays unchanged. This step only creates a configuration
+file for later publishing and student provisioning.
+            """
+        )
+
     uploaded = st.file_uploader("Upload an existing Jupyter notebook", type=["ipynb"])
     if uploaded is None:
         st.info("Choose a notebook to create a reviewable assignment configuration.")
@@ -125,14 +146,11 @@ def main() -> None:
         return
 
     st.subheader("Assignment details")
+    st.caption("Names are for teacher reference. Stable IDs are created automatically when you export.")
     details_left, details_right = st.columns(2)
     with details_left:
-        course_id = st.text_input("Course ID", value=draft["course"]["proposed_id"])
         course_name = st.text_input("Course name", value=draft["course"]["proposed_name"])
     with details_right:
-        assignment_id = st.text_input(
-            "Assignment ID", value=draft["assignment"]["proposed_id"]
-        )
         assignment_name = st.text_input(
             "Assignment name", value=draft["assignment"]["proposed_name"]
         )
@@ -147,15 +165,12 @@ def main() -> None:
     for draft_cell in draft["cells"]:
         label = f"Cell {draft_cell['position']}: {draft_cell['cell_type']} — {draft_cell['proposed_key']}"
         with st.expander(label, expanded=False):
-            preview = draft_cell["source_preview"] or "(empty cell)"
-            st.caption(f"Content preview: {preview}")
+            display_cell_source(draft_cell, st)
             reviewed_cells.append(reviewed_cell_from_widget(draft_cell, st))
 
     reviewed = build_reviewed_config(
         draft,
-        course_id,
         course_name,
-        assignment_id,
         assignment_name,
         allow_extra_cells,
         reviewed_cells,

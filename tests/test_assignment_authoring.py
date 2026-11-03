@@ -65,9 +65,7 @@ class AssignmentAuthoringTests(unittest.TestCase):
         }
         reviewed = scanner.build_reviewed_config(
             draft=draft,
-            course_id="course_1",
             course_name="Course 1",
-            assignment_id="assignment_1",
             assignment_name="Assignment 1",
             allow_extra_cells=True,
             reviewed_cells=[
@@ -94,6 +92,32 @@ class AssignmentAuthoringTests(unittest.TestCase):
 
         errors = scanner.validate_reviewed_config(reviewed)
         self.assertTrue(any("used more than once" in error for error in errors))
+
+    def test_numeric_heading_generates_a_valid_key(self) -> None:
+        notebook = {
+            "cells": [
+                {
+                    "id": "heading",
+                    "cell_type": "markdown",
+                    "source": "## 1. Understanding the objective",
+                }
+            ]
+        }
+
+        draft = scanner.build_draft_config(notebook, "example.ipynb")
+
+        self.assertEqual(
+            draft["cells"][0]["proposed_key"],
+            "header",
+        )
+        self.assertEqual(draft["cells"][0]["source"], "## 1. Understanding the objective")
+
+        later_heading = {"cells": notebook["cells"] * 2}
+        later_draft = scanner.build_draft_config(later_heading, "example.ipynb")
+        self.assertEqual(
+            later_draft["cells"][1]["proposed_key"],
+            "section_1_understanding_the_objective",
+        )
 
 
 if __name__ == "__main__":

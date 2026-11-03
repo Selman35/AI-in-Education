@@ -42,7 +42,9 @@ Then start the local browser app:
 streamlit run tools/assignment_authoring/app.py
 ```
 
-The app lets a teacher upload a notebook, review every proposed key, role,
-section, and permission, and download a reviewed JSON configuration. It does
-not modify the uploaded notebook, call an LLM, publish an assignment, or
-change the current extension behaviour.
+When the page opens, it explains the short review process. For every cell, the
+teacher can view its complete original content, then review its proposed key,
+role, section, and permissions before downloading a reviewed JSON
+configuration. Course and assignment IDs are generated automatically from the
+names entered in the app. It does not modify the uploaded notebook, call an
+LLM, publish an assignment, or change the current extension behaviour.
