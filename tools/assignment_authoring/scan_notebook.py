@@ -18,6 +18,13 @@ from typing import Any
 
 
 CONFIG_SCHEMA_VERSION = 1
+VALID_ROLES = {
+    "locked_text",
+    "starter_code",
+    "answer_code",
+    "answer_markdown",
+    "unrestricted",
+}
 
 
 def source_text(cell: dict[str, Any]) -> str:
@@ -100,6 +107,55 @@ def policy_for_role(role: str) -> dict[str, bool]:
         },
     }
     return policies[role].copy()
+
+
+def build_reviewed_config(
+    draft: dict[str, Any],
+    course_id: str,
+    course_name: str,
+    assignment_id: str,
+    assignment_name: str,
+    allow_extra_cells: bool,
+    reviewed_cells: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Create a canonical reviewed configuration from teacher selections.
+
+    This remains an export-only artifact. Publishing a template and adding
+    metadata to a notebook are intentionally later steps.
+    """
+    return {
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "status": "teacher_reviewed_not_published",
+        "source_notebook": draft["source_notebook"],
+        "course": {"id": course_id.strip(), "name": course_name.strip()},
+        "assignment": {
+            "id": assignment_id.strip(),
+            "name": assignment_name.strip(),
+        },
+        "structure": {"allow_extra_cells": bool(allow_extra_cells)},
+        "cells": reviewed_cells,
+    }
+
+
+def validate_reviewed_config(config: dict[str, Any]) -> list[str]:
+    """Return user-facing validation errors for a reviewed configuration."""
+    errors: list[str] = []
+    seen_keys: set[str] = set()
+    for cell in config.get("cells", []):
+        key = str(cell.get("analytics_key", "")).strip()
+        if not key:
+            errors.append(f"Cell at position {cell.get('position')} needs an analytics key.")
+            continue
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key):
+            errors.append(
+                f"Cell key '{key}' must start with a lowercase letter and use only lowercase letters, numbers, and underscores."
+            )
+        if key in seen_keys:
+            errors.append(f"Cell key '{key}' is used more than once.")
+        seen_keys.add(key)
+        if cell.get("role") not in VALID_ROLES:
+            errors.append(f"Cell key '{key}' has an unsupported role.")
+    return errors
 
 
 def build_draft_config(notebook: dict[str, Any], source_notebook: str) -> dict[str, Any]:

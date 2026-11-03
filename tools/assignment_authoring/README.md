@@ -27,3 +27,22 @@ Current deterministic suggestions are intentionally simple:
 Later steps will add an Ollama-based proposal layer, a Streamlit review screen,
 generic publishing/provisioning, baseline creation, and dynamic extension
 support for approved per-cell policies.
+
+## Step 2: review suggestions locally
+
+Install the optional local-app dependency:
+
+```bash
+pip install --upgrade -r tools/assignment_authoring/requirements.txt
+```
+
+Then start the local browser app:
+
+```bash
+streamlit run tools/assignment_authoring/app.py
+```
+
+The app lets a teacher upload a notebook, review every proposed key, role,
+section, and permission, and download a reviewed JSON configuration. It does
+not modify the uploaded notebook, call an LLM, publish an assignment, or
+change the current extension behaviour.

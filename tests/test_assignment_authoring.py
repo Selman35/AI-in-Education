@@ -58,6 +58,43 @@ class AssignmentAuthoringTests(unittest.TestCase):
         self.assertEqual(notebook["metadata"], {"unchanged": True})
         self.assertEqual(notebook["cells"][0], {"id": "a", "cell_type": "code", "source": ""})
 
+    def test_reviewed_configuration_requires_unique_safe_keys(self) -> None:
+        draft = {
+            "source_notebook": "example.ipynb",
+            "cells": [],
+        }
+        reviewed = scanner.build_reviewed_config(
+            draft=draft,
+            course_id="course_1",
+            course_name="Course 1",
+            assignment_id="assignment_1",
+            assignment_name="Assignment 1",
+            allow_extra_cells=True,
+            reviewed_cells=[
+                {
+                    "source_cell_id": "a",
+                    "position": 1,
+                    "cell_type": "code",
+                    "analytics_key": "task_1_code",
+                    "role": "answer_code",
+                    "section": "task_1",
+                    "policy": scanner.policy_for_role("answer_code"),
+                },
+                {
+                    "source_cell_id": "b",
+                    "position": 2,
+                    "cell_type": "markdown",
+                    "analytics_key": "task_1_code",
+                    "role": "answer_markdown",
+                    "section": "task_1",
+                    "policy": scanner.policy_for_role("answer_markdown"),
+                },
+            ],
+        )
+
+        errors = scanner.validate_reviewed_config(reviewed)
+        self.assertTrue(any("used more than once" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()
