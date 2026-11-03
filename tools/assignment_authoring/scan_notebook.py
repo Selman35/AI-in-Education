@@ -10,6 +10,7 @@ LLM step can improve before an assignment is published.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from collections import defaultdict
@@ -31,6 +32,14 @@ def source_text(cell: dict[str, Any]) -> str:
     """Return a notebook cell's source as one string."""
     source = cell.get("source", "")
     return "".join(source) if isinstance(source, list) else str(source)
+
+
+def notebook_fingerprint(notebook: dict[str, Any]) -> str:
+    """Return a reproducible SHA-256 fingerprint for a notebook structure."""
+    canonical_notebook = json.dumps(
+        notebook, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical_notebook.encode("utf-8")).hexdigest()
 
 
 def slugify(value: str, fallback: str) -> str:
@@ -129,6 +138,7 @@ def build_reviewed_config(
         "schema_version": CONFIG_SCHEMA_VERSION,
         "status": "teacher_reviewed_not_published",
         "source_notebook": draft["source_notebook"],
+        "source_notebook_sha256": draft.get("source_notebook_sha256"),
         "course": {
             "id": slugify(course_name, "course"),
             "name": course_name.strip(),
@@ -190,6 +200,7 @@ def build_draft_config(notebook: dict[str, Any], source_notebook: str) -> dict[s
         "schema_version": CONFIG_SCHEMA_VERSION,
         "status": "draft_requires_teacher_review",
         "source_notebook": source_notebook,
+        "source_notebook_sha256": notebook_fingerprint(notebook),
         "course": {"proposed_id": "", "proposed_name": ""},
         "assignment": {"proposed_id": "", "proposed_name": ""},
         "structure": {"allow_extra_cells": False},

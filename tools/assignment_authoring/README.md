@@ -50,3 +50,25 @@ under **Show advanced permissions** for exceptional cells. Course and
 assignment IDs are generated automatically from the names entered in the app.
 It does not modify the uploaded notebook, call an LLM, publish an assignment,
 or change the current extension behaviour.
+
+## Step 3: prepare an approved assignment
+
+After reviewing a notebook, create a separate prepared copy with the approved
+cell metadata:
+
+```bash
+python tools/assignment_authoring/prepare_assignment.py \
+  path/to/assignment.ipynb \
+  path/to/assignment.assignment-config.json
+```
+
+By default, this writes `assignment.prepared.ipynb` and
+`assignment.prepared.manifest.json` next to the original notebook. The source
+notebook and reviewed configuration remain unchanged. The tool stops if the
+notebook no longer matches the reviewed configuration by filename, cell order,
+cell IDs, cell types, or (for newly exported configurations) content
+fingerprint.
+
+The prepared notebook stores generic metadata under `assignment_authoring`.
+It deliberately does not activate any new JupyterLab protections yet; dynamic
+extension support is a later step.
