@@ -59,6 +59,11 @@ cells, code and Markdown cell counts, section count, and the selected role
 distribution. If any validation issue remains, it is listed and downloads stay
 unavailable until it is resolved.
 
+The page also includes a compact overview table for all cells, filters for cell
+type and role, text search, and bulk role/section updates. Detailed expanders
+remain available whenever a teacher needs to inspect a cell's full content or
+adjust an individual decision.
+
 When review is valid, the page provides three downloads: a prepared student
 notebook, a preparation manifest, and the reviewed JSON configuration as an
 optional record. Teachers do not need to run the Step 3 command-line tool when

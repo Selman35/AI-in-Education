@@ -177,6 +177,19 @@ class AssignmentAuthoringTests(unittest.TestCase):
         self.assertEqual(summary["section_count"], 2)
         self.assertEqual(summary["roles"]["answer_code"], 1)
 
+    def test_cell_validation_groups_duplicate_key_errors_by_position(self) -> None:
+        errors = scanner.cell_validation_errors(
+            [
+                {"position": 2, "analytics_key": "duplicate", "role": "answer_code"},
+                {"position": 5, "analytics_key": "duplicate", "role": "answer_markdown"},
+            ]
+        )
+
+        self.assertIn(2, errors)
+        self.assertIn(5, errors)
+        self.assertTrue(any("used more than once" in error for error in errors[2]))
+        self.assertTrue(any("used more than once" in error for error in errors[5]))
+
     def test_preparation_writes_metadata_without_changing_inputs(self) -> None:
         notebook = {
             "nbformat": 4,

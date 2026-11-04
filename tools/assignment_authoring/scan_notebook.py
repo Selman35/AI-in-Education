@@ -231,22 +231,40 @@ def build_reviewed_config(
 def validate_reviewed_config(config: dict[str, Any]) -> list[str]:
     """Return user-facing validation errors for a reviewed configuration."""
     errors: list[str] = []
-    seen_keys: set[str] = set()
-    for cell in config.get("cells", []):
+    for cell_errors in cell_validation_errors(config.get("cells", [])).values():
+        errors.extend(cell_errors)
+    return errors
+
+
+def cell_validation_errors(cells: list[dict[str, Any]]) -> dict[int, list[str]]:
+    """Return validation messages grouped by configured cell position."""
+    errors_by_position: defaultdict[int, list[str]] = defaultdict(list)
+    key_positions: defaultdict[str, list[int]] = defaultdict(list)
+    for cell in cells:
+        position = int(cell.get("position", 0))
         key = str(cell.get("analytics_key", "")).strip()
         if not key:
-            errors.append(f"Cell at position {cell.get('position')} needs an analytics key.")
-            continue
-        if not re.fullmatch(r"[a-z][a-z0-9_]*", key):
-            errors.append(
+            errors_by_position[position].append(
+                f"Cell at position {position} needs an analytics key."
+            )
+        elif not re.fullmatch(r"[a-z][a-z0-9_]*", key):
+            errors_by_position[position].append(
                 f"Cell key '{key}' must start with a lowercase letter and use only lowercase letters, numbers, and underscores."
             )
-        if key in seen_keys:
-            errors.append(f"Cell key '{key}' is used more than once.")
-        seen_keys.add(key)
+        if key:
+            key_positions[key].append(position)
         if cell.get("role") not in VALID_ROLES:
-            errors.append(f"Cell key '{key}' has an unsupported role.")
-    return errors
+            errors_by_position[position].append(
+                f"Cell key '{key}' has an unsupported role."
+            )
+
+    for key, positions in key_positions.items():
+        if len(positions) > 1:
+            for position in positions:
+                errors_by_position[position].append(
+                    f"Cell key '{key}' is used more than once."
+                )
+    return dict(errors_by_position)
 
 
 def build_draft_config(notebook: dict[str, Any], source_notebook: str) -> dict[str, Any]:

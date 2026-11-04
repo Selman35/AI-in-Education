@@ -23,6 +23,7 @@ from scan_notebook import (
     VALID_ROLES,
     build_draft_config,
     build_reviewed_config,
+    cell_validation_errors,
     policy_for_role,
     review_summary,
     validate_reviewed_config,
@@ -38,6 +39,53 @@ ROLE_LABELS = {
 }
 
 
+def widget_prefix(draft_cell: dict[str, Any]) -> str:
+    """Return stable Streamlit widget keys for one source-notebook cell."""
+    return f"cell_{draft_cell['position']}"
+
+
+def initialise_review_state(draft: dict[str, Any], st: Any) -> None:
+    """Initialise or reset review widgets when the uploaded notebook changes."""
+    upload_identity = (
+        f"{draft['source_notebook']}:{draft.get('source_notebook_sha256', '')}"
+    )
+    if st.session_state.get("assignment_authoring_upload") == upload_identity:
+        return
+
+    for draft_cell in draft["cells"]:
+        prefix = widget_prefix(draft_cell)
+        st.session_state[f"{prefix}_role"] = draft_cell["proposed_role"]
+        st.session_state[f"{prefix}_key"] = draft_cell["proposed_key"]
+        st.session_state[f"{prefix}_section"] = draft_cell["proposed_section"]
+        st.session_state[f"{prefix}_show_advanced_permissions"] = False
+        default_policy = draft_cell["proposed_policy"]
+        for permission, value in default_policy.items():
+            st.session_state[f"{prefix}_{permission}"] = value
+    st.session_state["assignment_authoring_upload"] = upload_identity
+
+
+def reviewed_cell_from_state(draft_cell: dict[str, Any], st: Any) -> dict[str, Any]:
+    """Read one cell's current review decision, including optional overrides."""
+    prefix = widget_prefix(draft_cell)
+    role = st.session_state[f"{prefix}_role"]
+    default_policy = policy_for_role(role)
+    permissions = default_policy
+    if st.session_state[f"{prefix}_show_advanced_permissions"]:
+        permissions = {
+            permission: st.session_state[f"{prefix}_{permission}"]
+            for permission in default_policy
+        }
+    return {
+        "source_cell_id": draft_cell["source_cell_id"],
+        "position": draft_cell["position"],
+        "cell_type": draft_cell["cell_type"],
+        "analytics_key": st.session_state[f"{prefix}_key"].strip(),
+        "role": role,
+        "section": st.session_state[f"{prefix}_section"].strip(),
+        "policy": permissions,
+    }
+
+
 def notebook_from_upload(uploaded_file: Any) -> dict[str, Any]:
     """Read and validate the uploaded notebook without writing it to disk."""
     notebook = json.loads(uploaded_file.getvalue().decode("utf-8"))
@@ -49,32 +97,32 @@ def notebook_from_upload(uploaded_file: Any) -> dict[str, Any]:
 def reviewed_cell_from_widget(draft_cell: dict[str, Any], st: Any) -> dict[str, Any]:
     """Render teacher controls for one cell and return the reviewed selection."""
     position = draft_cell["position"]
-    widget_prefix = f"cell_{position}"
+    prefix = widget_prefix(draft_cell)
     default_role = draft_cell["proposed_role"]
     role = st.selectbox(
         "Role",
         options=sorted(VALID_ROLES),
         index=sorted(VALID_ROLES).index(default_role),
         format_func=lambda value: ROLE_LABELS[value],
-        key=f"{widget_prefix}_role",
+        key=f"{prefix}_role",
     )
     default_policy = policy_for_role(role)
     analytics_key = st.text_input(
         "Stable analytics key",
         value=draft_cell["proposed_key"],
-        key=f"{widget_prefix}_key",
+        key=f"{prefix}_key",
         help="Use lowercase letters, numbers, and underscores. This key is used in logs and analytics.",
     )
     section = st.text_input(
         "Section or task key",
         value=draft_cell["proposed_section"],
-        key=f"{widget_prefix}_section",
+        key=f"{prefix}_section",
     )
     permissions = default_policy
     if st.checkbox(
         "Show advanced permissions",
         value=False,
-        key=f"{widget_prefix}_show_advanced_permissions",
+        key=f"{prefix}_show_advanced_permissions",
         help="Roles already provide the usual permissions. Change these only for an exception.",
     ):
         st.caption(
@@ -84,12 +132,12 @@ def reviewed_cell_from_widget(draft_cell: dict[str, Any], st: Any) -> dict[str, 
             "source_editable": st.checkbox(
                 "Students may edit source",
                 value=default_policy["source_editable"],
-                key=f"{widget_prefix}_source_editable",
+                key=f"{prefix}_source_editable",
             ),
             "executable": st.checkbox(
                 "Students may run this cell",
                 value=default_policy["executable"],
-                key=f"{widget_prefix}_executable",
+                key=f"{prefix}_executable",
             ),
             "deletable": st.checkbox(
                 "Students may delete this original cell",
@@ -102,15 +150,50 @@ def reviewed_cell_from_widget(draft_cell: dict[str, Any], st: Any) -> dict[str, 
                 key=f"{widget_prefix}_movable",
             ),
         }
-    return {
-        "source_cell_id": draft_cell["source_cell_id"],
-        "position": position,
-        "cell_type": draft_cell["cell_type"],
-        "analytics_key": analytics_key.strip(),
-        "role": role,
-        "section": section.strip(),
-        "policy": permissions,
-    }
+    return reviewed_cell_from_state(draft_cell, st)
+
+
+def review_overview_rows(
+    draft_cells: list[dict[str, Any]],
+    reviewed_cells: list[dict[str, Any]],
+    errors_by_position: dict[int, list[str]],
+) -> list[dict[str, str | int]]:
+    """Build compact rows for the teacher-facing notebook overview table."""
+    rows: list[dict[str, str | int]] = []
+    for draft_cell, reviewed_cell in zip(draft_cells, reviewed_cells):
+        position = reviewed_cell["position"]
+        messages = errors_by_position.get(position, [])
+        rows.append(
+            {
+                "Cell": position,
+                "Type": reviewed_cell["cell_type"],
+                "Section": reviewed_cell["section"] or "—",
+                "Role": ROLE_LABELS.get(reviewed_cell["role"], reviewed_cell["role"]),
+                "Stable key": reviewed_cell["analytics_key"] or "—",
+                "Preview": draft_cell["source_preview"] or "(empty cell)",
+                "Status": "Needs attention" if messages else "Ready",
+            }
+        )
+    return rows
+
+
+def apply_bulk_changes(
+    draft_cells: list[dict[str, Any]],
+    positions: list[int],
+    role: str | None,
+    section: str,
+    st: Any,
+) -> None:
+    """Apply an optional common role and section to selected reviewed cells."""
+    for draft_cell in draft_cells:
+        if draft_cell["position"] not in positions:
+            continue
+        prefix = widget_prefix(draft_cell)
+        if role:
+            st.session_state[f"{prefix}_role"] = role
+            st.session_state[f"{prefix}_show_advanced_permissions"] = False
+        if section.strip():
+            st.session_state[f"{prefix}_section"] = section.strip()
 
 
 def display_cell_source(draft_cell: dict[str, Any], st: Any) -> None:
@@ -165,6 +248,7 @@ permissions** only when one cell needs behaviour that differs from its role.
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         st.error(str(error))
         return
+    initialise_review_state(draft, st)
 
     st.subheader("Assignment details")
     st.caption("Names are for teacher reference. Stable IDs are created automatically when you export.")
@@ -181,13 +265,98 @@ permissions** only when one cell needs behaviour that differs from its role.
         help="Extra-cell naming and live extension support will be added in a later step.",
     )
 
-    st.subheader("Cell review")
-    reviewed_cells = []
+    st.subheader("Notebook overview")
+    st.caption(
+        "This table shows every cell. Use the filters and bulk updates below to make common changes faster."
+    )
+
+    type_options = sorted({cell["cell_type"] for cell in draft["cells"]})
+    role_options = sorted(VALID_ROLES)
+    filter_left, filter_middle, filter_right = st.columns(3)
+    with filter_left:
+        selected_types = st.multiselect(
+            "Show cell types", type_options, default=type_options
+        )
+    with filter_middle:
+        selected_roles = st.multiselect(
+            "Show roles", role_options, default=role_options,
+            format_func=lambda value: ROLE_LABELS[value],
+        )
+    with filter_right:
+        search_text = st.text_input(
+            "Find a cell", help="Searches suggested key, section, or source preview."
+        ).strip().lower()
+
+    st.subheader("Bulk updates")
+    position_labels = {
+        cell["position"]: f"Cell {cell['position']}: {cell['proposed_key']}"
+        for cell in draft["cells"]
+    }
+    selected_positions = st.multiselect(
+        "Cells to update",
+        options=list(position_labels),
+        format_func=lambda position: position_labels[position],
+        help="Select one or more cells, then apply a common role or section.",
+    )
+    bulk_left, bulk_middle, bulk_right = st.columns(3)
+    with bulk_left:
+        bulk_role_option = st.selectbox(
+            "Common role",
+            options=["Keep current"] + role_options,
+            format_func=lambda value: "Keep current" if value == "Keep current" else ROLE_LABELS[value],
+        )
+    with bulk_middle:
+        bulk_section = st.text_input(
+            "Common section", help="Leave blank to keep each cell's current section."
+        )
+    with bulk_right:
+        st.write("")
+        if st.button("Apply to selected cells"):
+            if not selected_positions:
+                st.warning("Select at least one cell before applying a bulk update.")
+            else:
+                apply_bulk_changes(
+                    draft["cells"],
+                    selected_positions,
+                    None if bulk_role_option == "Keep current" else bulk_role_option,
+                    bulk_section,
+                    st,
+                )
+                st.rerun()
+
+    reviewed_cells = [reviewed_cell_from_state(cell, st) for cell in draft["cells"]]
+    errors_by_position = cell_validation_errors(reviewed_cells)
+    st.dataframe(
+        review_overview_rows(draft["cells"], reviewed_cells, errors_by_position),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.subheader("Detailed cell review")
+    visible_cells = []
     for draft_cell in draft["cells"]:
+        current = reviewed_cell_from_state(draft_cell, st)
+        searchable = " ".join(
+            [
+                current["analytics_key"],
+                current["section"],
+                draft_cell["source_preview"],
+            ]
+        ).lower()
+        if (
+            current["cell_type"] in selected_types
+            and current["role"] in selected_roles
+            and (not search_text or search_text in searchable)
+        ):
+            visible_cells.append(draft_cell)
+    st.caption(f"Showing {len(visible_cells)} of {len(draft['cells'])} cells.")
+    for draft_cell in visible_cells:
         label = f"Cell {draft_cell['position']}: {draft_cell['cell_type']} — {draft_cell['proposed_key']}"
         with st.expander(label, expanded=False):
             display_cell_source(draft_cell, st)
-            reviewed_cells.append(reviewed_cell_from_widget(draft_cell, st))
+            reviewed_cell_from_widget(draft_cell, st)
+
+    reviewed_cells = [reviewed_cell_from_state(cell, st) for cell in draft["cells"]]
 
     reviewed = build_reviewed_config(
         draft,
@@ -199,6 +368,7 @@ permissions** only when one cell needs behaviour that differs from its role.
     errors = validate_reviewed_config(reviewed)
     errors.extend(validate_notebook_matches_config(notebook, reviewed, uploaded.name))
 
+    errors_by_position = cell_validation_errors(reviewed_cells)
     summary = review_summary(reviewed_cells)
     st.subheader("Review summary")
     total_column, code_column, markdown_column, section_column = st.columns(4)
