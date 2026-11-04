@@ -11,8 +11,14 @@ modified or sent to an external service.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
+from prepare_assignment import (
+    build_manifest,
+    prepare_assignment,
+    validate_notebook_matches_config,
+)
 from scan_notebook import (
     VALID_ROLES,
     build_draft_config,
@@ -127,7 +133,7 @@ def main() -> None:
     st.set_page_config(page_title="Notebook assignment authoring", layout="wide")
     st.title("Notebook assignment authoring")
     st.caption(
-        "Step 2: review deterministic suggestions locally. This app does not modify notebooks or publish assignments."
+        "Review an existing notebook locally and download a prepared student version. The uploaded file is never modified."
     )
 
     with st.expander("How to use this page", expanded=True):
@@ -136,10 +142,10 @@ def main() -> None:
 1. Upload an existing Jupyter notebook.
 2. Open each cell review and read the complete original cell content.
 3. Confirm or change its role, stable analytics key, and section.
-4. Download the reviewed configuration once there are no validation errors.
+4. Download the prepared student notebook once there are no validation errors.
 
-The uploaded notebook stays unchanged. This step only creates a configuration
-file for later publishing and student provisioning.
+The uploaded notebook stays unchanged. The prepared notebook is downloaded as
+a separate file for later use with generic assignment policies.
 
 **Roles set the normal student permissions automatically.** Use **Show advanced
 permissions** only when one cell needs behaviour that differs from its role.
@@ -189,6 +195,7 @@ permissions** only when one cell needs behaviour that differs from its role.
         reviewed_cells,
     )
     errors = validate_reviewed_config(reviewed)
+    errors.extend(validate_notebook_matches_config(notebook, reviewed, uploaded.name))
 
     st.subheader("Export")
     if errors:
@@ -197,14 +204,43 @@ permissions** only when one cell needs behaviour that differs from its role.
             st.write(f"- {error}")
         return
 
-    st.success("The reviewed configuration is valid. It has not changed the uploaded notebook.")
+    st.success("The reviewed configuration is valid. The uploaded notebook has not changed.")
     config_json = json.dumps(reviewed, indent=2) + "\n"
     st.download_button(
-        "Download reviewed configuration",
+        "Download reviewed configuration (optional record)",
         data=config_json,
         file_name=uploaded.name.removesuffix(".ipynb") + ".assignment-config.json",
         mime="application/json",
     )
+    prepared = prepare_assignment(notebook, reviewed)
+    uploaded_path = Path(uploaded.name)
+    prepared_name = uploaded_path.with_name(f"{uploaded_path.stem}.prepared.ipynb").name
+    manifest_name = uploaded_path.with_name(f"{uploaded_path.stem}.prepared.manifest.json").name
+    manifest = build_manifest(
+        uploaded_path,
+        uploaded_path.with_name(uploaded.name.removesuffix(".ipynb") + ".assignment-config.json"),
+        Path(prepared_name),
+        notebook,
+        reviewed,
+    )
+    prepared_json = json.dumps(prepared, indent=1) + "\n"
+    manifest_json = json.dumps(manifest, indent=2) + "\n"
+    downloads_left, downloads_right = st.columns(2)
+    with downloads_left:
+        st.download_button(
+            "Download prepared student notebook",
+            data=prepared_json,
+            file_name=prepared_name,
+            mime="application/x-ipynb+json",
+            type="primary",
+        )
+    with downloads_right:
+        st.download_button(
+            "Download preparation manifest",
+            data=manifest_json,
+            file_name=manifest_name,
+            mime="application/json",
+        )
     with st.expander("Preview configuration JSON"):
         st.code(config_json, language="json")
 

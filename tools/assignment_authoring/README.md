@@ -24,9 +24,7 @@ Current deterministic suggestions are intentionally simple:
 - empty code cells are proposed as editable code answers;
 - empty Markdown cells are proposed as editable Markdown answers.
 
-Later steps will add an Ollama-based proposal layer, a Streamlit review screen,
-generic publishing/provisioning, baseline creation, and dynamic extension
-support for approved per-cell policies.
+Later steps may add an Ollama-based proposal layer and baseline creation.
 
 ## Step 2: review suggestions locally
 
@@ -44,12 +42,15 @@ streamlit run tools/assignment_authoring/app.py
 
 When the page opens, it explains the short review process. For every cell, the
 teacher can view its complete original content, then review its proposed key,
-role, and section before downloading a reviewed JSON configuration. A role
-sets the normal student permissions; individual permissions are available only
-under **Show advanced permissions** for exceptional cells. Course and
-assignment IDs are generated automatically from the names entered in the app.
-It does not modify the uploaded notebook, call an LLM, publish an assignment,
-or change the current extension behaviour.
+role, and section. A role sets the normal student permissions; individual
+permissions are available only under **Show advanced permissions** for
+exceptional cells. Course and assignment IDs are generated automatically from
+the names entered in the app.
+
+When review is valid, the page provides three downloads: a prepared student
+notebook, a preparation manifest, and the reviewed JSON configuration as an
+optional record. Teachers do not need to run the Step 3 command-line tool when
+using the website. The uploaded notebook remains unchanged.
 
 ## Step 3: prepare an approved assignment
 
@@ -70,5 +71,7 @@ cell IDs, cell types, or (for newly exported configurations) content
 fingerprint.
 
 The prepared notebook stores generic metadata under `assignment_authoring`.
-It deliberately does not activate any new JupyterLab protections yet; dynamic
-extension support is a later step.
+It does not activate any new JupyterLab protections yet; adapting the
+extension to enforce these generic policies will be considered after the pilot
+study. The source notebook and current pilot-extension behaviour remain
+unchanged.
