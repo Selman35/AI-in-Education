@@ -49,15 +49,46 @@ class AssignmentAuthoringTests(unittest.TestCase):
 
         self.assertEqual([cell["proposed_key"] for cell in cells], [
             "header",
-            "starter_code",
-            "answer_code",
-            "answer_code_2",
-            "answer_markdown",
-            "instruction",
+            "header_starter_code",
+            "header_code",
+            "header_code_2",
+            "header_explanation",
+            "header_question",
         ])
         self.assertEqual(cells[2]["proposed_role"], "answer_code")
         self.assertTrue(cells[2]["proposed_policy"]["executable"])
         self.assertFalse(cells[2]["proposed_policy"]["deletable"])
+
+    def test_headings_create_task_sections_and_descriptive_keys(self) -> None:
+        notebook = {
+            "cells": [
+                {"id": "a", "cell_type": "markdown", "source": "# Course"},
+                {
+                    "id": "b",
+                    "cell_type": "markdown",
+                    "source": "## Task 1 — Optimisation",
+                },
+                {
+                    "id": "c",
+                    "cell_type": "markdown",
+                    "source": "Write a function that minimises the objective.",
+                },
+                {"id": "d", "cell_type": "code", "source": ""},
+                {"id": "e", "cell_type": "markdown", "source": ""},
+                {"id": "f", "cell_type": "markdown", "source": "## Task 2 — Analysis"},
+                {"id": "g", "cell_type": "code", "source": "import numpy as np"},
+            ]
+        }
+
+        cells = scanner.build_draft_config(notebook, "example.ipynb")["cells"]
+
+        self.assertEqual(cells[1]["proposed_key"], "task_1_optimisation")
+        self.assertEqual(cells[2]["proposed_key"], "task_1_optimisation_question")
+        self.assertEqual(cells[3]["proposed_key"], "task_1_optimisation_code")
+        self.assertEqual(cells[4]["proposed_key"], "task_1_optimisation_explanation")
+        self.assertEqual(cells[6]["proposed_key"], "task_2_analysis_starter_code")
+        self.assertEqual(cells[3]["proposed_section"], "task_1_optimisation")
+        self.assertIn("Empty code", cells[3]["suggestion_reason"])
 
     def test_input_notebook_is_not_modified(self) -> None:
         notebook = {

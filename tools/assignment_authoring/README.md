@@ -19,10 +19,17 @@ later teacher review; it does not publish an assignment or apply locks.
 
 Current deterministic suggestions are intentionally simple:
 
-- non-empty Markdown cells are proposed as locked text;
+- Markdown headings begin a new proposed section;
+- prompt-like Markdown cells are proposed as locked questions or instructions;
 - non-empty code cells are proposed as locked but runnable starter code;
 - empty code cells are proposed as editable code answers;
-- empty Markdown cells are proposed as editable Markdown answers.
+- empty Markdown cells are proposed as editable Markdown explanations;
+- suggested keys include the current section, such as
+  `task_1_optimisation_code`.
+
+Each proposed cell shows its suggestion reason in the review page. These are
+only starting points: the teacher remains responsible for every final role,
+key, section, and permission.
 
 Later steps may add an Ollama-based proposal layer and baseline creation.
 

@@ -119,6 +119,7 @@ def display_cell_source(draft_cell: dict[str, Any], st: Any) -> None:
     language = "python" if draft_cell["cell_type"] == "code" else "markdown"
     st.caption("Original cell content")
     st.code(source, language=language)
+    st.info(f"Suggestion: {draft_cell['suggestion_reason']}")
 
 
 def main() -> None:

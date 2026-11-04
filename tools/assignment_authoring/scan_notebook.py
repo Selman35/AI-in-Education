@@ -58,8 +58,22 @@ def markdown_heading(source: str) -> str | None:
     return match.group(1) if match else None
 
 
-def propose_role(cell: dict[str, Any], position: int) -> tuple[str, str, str]:
-    """Return deterministic role, key stem, and section for one notebook cell.
+def looks_like_question_or_instruction(source: str) -> bool:
+    """Recognise common assignment-prompt wording without making an LLM guess."""
+    return bool(
+        re.search(
+            r"\?|\b(question|task|exercise|write|implement|explain|describe|"
+            r"calculate|complete|your answer|use the following)\b",
+            source,
+            re.IGNORECASE,
+        )
+    )
+
+
+def propose_role(
+    cell: dict[str, Any], position: int, section: str = "general"
+) -> tuple[str, str, str, str]:
+    """Return deterministic role, key stem, section, and reason for one cell.
 
     These are intentionally conservative suggestions. A teacher or a later LLM
     review may replace every proposed value before publication.
@@ -69,20 +83,62 @@ def propose_role(cell: dict[str, Any], position: int) -> tuple[str, str, str]:
 
     if cell_type == "markdown":
         if not source:
-            return "answer_markdown", "answer_markdown", "general"
+            return (
+                "answer_markdown",
+                f"{section}_explanation",
+                section,
+                "Empty Markdown cell: proposed as a student explanation area.",
+            )
         heading = markdown_heading(source)
         if position == 1:
-            return "locked_text", "header", "header"
+            return (
+                "locked_text",
+                "header",
+                "header",
+                "First Markdown heading: proposed as the assignment header.",
+            )
         if heading:
-            return "locked_text", slugify(heading, "section"), slugify(heading, "section")
-        return "locked_text", "instruction", "general"
+            return (
+                "locked_text",
+                section,
+                section,
+                "Markdown heading: proposed as a locked section heading.",
+            )
+        if looks_like_question_or_instruction(source):
+            return (
+                "locked_text",
+                f"{section}_question",
+                section,
+                "Prompt-like Markdown: proposed as a locked question or instruction.",
+            )
+        return (
+            "locked_text",
+            f"{section}_instructions",
+            section,
+            "Non-empty Markdown: proposed as locked instructional text.",
+        )
 
     if cell_type == "code":
         if source:
-            return "starter_code", "starter_code", "general"
-        return "answer_code", "answer_code", "general"
+            return (
+                "starter_code",
+                f"{section}_starter_code",
+                section,
+                "Non-empty code: proposed as runnable starter code.",
+            )
+        return (
+            "answer_code",
+            f"{section}_code",
+            section,
+            "Empty code cell: proposed as a student code answer area.",
+        )
 
-    return "unrestricted", "raw", "general"
+    return (
+        "unrestricted",
+        f"{section}_raw",
+        section,
+        "Unsupported cell type: proposed as unrestricted.",
+    )
 
 
 def policy_for_role(role: str) -> dict[str, bool]:
@@ -197,9 +253,19 @@ def build_draft_config(notebook: dict[str, Any], source_notebook: str) -> dict[s
     """Build a reviewable, deterministic configuration without modifying input."""
     counters: defaultdict[str, int] = defaultdict(int)
     cells: list[dict[str, Any]] = []
+    current_section = "general"
 
     for position, cell in enumerate(notebook.get("cells", []), start=1):
-        role, stem, section = propose_role(cell, position)
+        source = source_text(cell).strip()
+        heading = (
+            markdown_heading(source) if cell.get("cell_type") == "markdown" else None
+        )
+        if heading:
+            current_section = "header" if position == 1 else slugify(heading, "section")
+
+        role, stem, section, suggestion_reason = propose_role(
+            cell, position, current_section
+        )
         counters[stem] += 1
         key = stem if counters[stem] == 1 else f"{stem}_{counters[stem]}"
         cells.append(
@@ -207,12 +273,13 @@ def build_draft_config(notebook: dict[str, Any], source_notebook: str) -> dict[s
                 "source_cell_id": cell.get("id"),
                 "position": position,
                 "cell_type": cell.get("cell_type", "raw"),
-                "source_preview": source_text(cell).strip().replace("\n", " ")[:160],
+                "source_preview": source.replace("\n", " ")[:160],
                 "source": source_text(cell),
                 "proposed_key": key,
                 "proposed_role": role,
                 "proposed_section": section,
                 "proposed_policy": policy_for_role(role),
+                "suggestion_reason": suggestion_reason,
             }
         )
 
