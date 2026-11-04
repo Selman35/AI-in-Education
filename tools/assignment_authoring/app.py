@@ -24,6 +24,7 @@ from scan_notebook import (
     build_draft_config,
     build_reviewed_config,
     policy_for_role,
+    review_summary,
     validate_reviewed_config,
 )
 
@@ -197,11 +198,25 @@ permissions** only when one cell needs behaviour that differs from its role.
     errors = validate_reviewed_config(reviewed)
     errors.extend(validate_notebook_matches_config(notebook, reviewed, uploaded.name))
 
+    summary = review_summary(reviewed_cells)
+    st.subheader("Review summary")
+    total_column, code_column, markdown_column, section_column = st.columns(4)
+    total_column.metric("Cells", summary["total_cells"])
+    code_column.metric("Code cells", summary["code_cells"])
+    markdown_column.metric("Markdown cells", summary["markdown_cells"])
+    section_column.metric("Sections", summary["section_count"])
+    role_summary = ", ".join(
+        f"{ROLE_LABELS.get(role, role)}: {count}"
+        for role, count in summary["roles"].items()
+    )
+    st.caption(f"Selected roles — {role_summary or 'none'}")
+
     st.subheader("Export")
     if errors:
         st.error("Resolve these issues before exporting:")
         for error in errors:
             st.write(f"- {error}")
+        st.caption("Downloads are unavailable until the review is valid.")
         return
 
     st.success("The reviewed configuration is valid. The uploaded notebook has not changed.")

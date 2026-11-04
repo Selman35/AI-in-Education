@@ -122,6 +122,26 @@ def policy_for_role(role: str) -> dict[str, bool]:
     return policies[role].copy()
 
 
+def review_summary(cells: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarise a teacher's current review selections for the web interface."""
+    cell_types: defaultdict[str, int] = defaultdict(int)
+    roles: defaultdict[str, int] = defaultdict(int)
+    sections: set[str] = set()
+    for cell in cells:
+        cell_types[str(cell.get("cell_type", "unknown"))] += 1
+        roles[str(cell.get("role", "unassigned"))] += 1
+        section = str(cell.get("section", "")).strip()
+        if section:
+            sections.add(section)
+    return {
+        "total_cells": len(cells),
+        "code_cells": cell_types["code"],
+        "markdown_cells": cell_types["markdown"],
+        "section_count": len(sections),
+        "roles": dict(sorted(roles.items())),
+    }
+
+
 def build_reviewed_config(
     draft: dict[str, Any],
     course_name: str,

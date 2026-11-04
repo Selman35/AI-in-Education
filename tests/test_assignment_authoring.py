@@ -131,6 +131,21 @@ class AssignmentAuthoringTests(unittest.TestCase):
             "section_1_understanding_the_objective",
         )
 
+    def test_review_summary_counts_types_roles_and_sections(self) -> None:
+        summary = scanner.review_summary(
+            [
+                {"cell_type": "markdown", "role": "locked_text", "section": "intro"},
+                {"cell_type": "code", "role": "starter_code", "section": "task_1"},
+                {"cell_type": "code", "role": "answer_code", "section": "task_1"},
+            ]
+        )
+
+        self.assertEqual(summary["total_cells"], 3)
+        self.assertEqual(summary["code_cells"], 2)
+        self.assertEqual(summary["markdown_cells"], 1)
+        self.assertEqual(summary["section_count"], 2)
+        self.assertEqual(summary["roles"]["answer_code"], 1)
+
     def test_preparation_writes_metadata_without_changing_inputs(self) -> None:
         notebook = {
             "nbformat": 4,

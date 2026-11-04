@@ -47,6 +47,11 @@ permissions are available only under **Show advanced permissions** for
 exceptional cells. Course and assignment IDs are generated automatically from
 the names entered in the app.
 
+Before export, the page shows a live summary of the reviewed notebook: total
+cells, code and Markdown cell counts, section count, and the selected role
+distribution. If any validation issue remains, it is listed and downloads stay
+unavailable until it is resolved.
+
 When review is valid, the page provides three downloads: a prepared student
 notebook, a preparation manifest, and the reviewed JSON configuration as an
 optional record. Teachers do not need to run the Step 3 command-line tool when
