@@ -10,9 +10,11 @@ modified or sent to an external service.
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from prepare_assignment import (
     build_manifest,
@@ -142,12 +144,12 @@ def reviewed_cell_from_widget(draft_cell: dict[str, Any], st: Any) -> dict[str, 
             "deletable": st.checkbox(
                 "Students may delete this original cell",
                 value=default_policy["deletable"],
-                key=f"{widget_prefix}_deletable",
+                key=f"{prefix}_deletable",
             ),
             "movable": st.checkbox(
                 "Students may move this original cell",
                 value=default_policy["movable"],
-                key=f"{widget_prefix}_movable",
+                key=f"{prefix}_movable",
             ),
         }
     return reviewed_cell_from_state(draft_cell, st)
@@ -194,6 +196,61 @@ def apply_bulk_changes(
             st.session_state[f"{prefix}_show_advanced_permissions"] = False
         if section.strip():
             st.session_state[f"{prefix}_section"] = section.strip()
+
+
+def local_test_guide(assignment_id: str) -> str:
+    """Return concise instructions bundled with a downloaded assignment package."""
+    return f"""# Local assignment-package test
+
+This package contains a prepared notebook and its review records. It does not
+include a copy of the JupyterLab extension.
+
+## Run locally
+
+1. Extract this folder inside the existing `AI-in-Education` repository.
+2. Activate the Conda environment used for that repository.
+3. Rebuild the installed local extension:
+
+   ```bash
+   jlpm run build
+   ```
+
+4. Start JupyterLab:
+
+   ```bash
+   jupyter lab
+   ```
+
+5. Open `{assignment_id}.ipynb` from this extracted folder.
+
+The prepared notebook preserves the teacher-reviewed roles, stable cell keys,
+sections, and permissions as metadata. Existing logging continues to use the
+configured logging root. Generic role enforcement is introduced separately
+from this package-export step.
+"""
+
+
+def build_assignment_package(
+    assignment_id: str,
+    prepared_notebook_json: str,
+    configuration_json: str,
+    manifest_json: str,
+) -> bytes:
+    """Build the single ZIP download for a reviewed assignment."""
+    package_root = f"{assignment_id}/"
+    package = io.BytesIO()
+    with ZipFile(package, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr(
+            f"{package_root}{assignment_id}.ipynb", prepared_notebook_json
+        )
+        archive.writestr(
+            f"{package_root}assignment-config.json", configuration_json
+        )
+        archive.writestr(
+            f"{package_root}assignment.manifest.json", manifest_json
+        )
+        archive.writestr(f"{package_root}LOCAL_TEST.md", local_test_guide(assignment_id))
+    return package.getvalue()
 
 
 def display_cell_source(draft_cell: dict[str, Any], st: Any) -> None:
@@ -392,41 +449,54 @@ permissions** only when one cell needs behaviour that differs from its role.
 
     st.success("The reviewed configuration is valid. The uploaded notebook has not changed.")
     config_json = json.dumps(reviewed, indent=2) + "\n"
-    st.download_button(
-        "Download reviewed configuration (optional record)",
-        data=config_json,
-        file_name=uploaded.name.removesuffix(".ipynb") + ".assignment-config.json",
-        mime="application/json",
-    )
     prepared = prepare_assignment(notebook, reviewed)
     uploaded_path = Path(uploaded.name)
-    prepared_name = uploaded_path.with_name(f"{uploaded_path.stem}.prepared.ipynb").name
-    manifest_name = uploaded_path.with_name(f"{uploaded_path.stem}.prepared.manifest.json").name
-    manifest = build_manifest(
+    assignment_id = reviewed["assignment"]["id"] or uploaded_path.stem
+    package_notebook_name = f"{assignment_id}.ipynb"
+    package_manifest = build_manifest(
         uploaded_path,
-        uploaded_path.with_name(uploaded.name.removesuffix(".ipynb") + ".assignment-config.json"),
-        Path(prepared_name),
+        Path("assignment-config.json"),
+        Path(package_notebook_name),
         notebook,
         reviewed,
     )
     prepared_json = json.dumps(prepared, indent=1) + "\n"
-    manifest_json = json.dumps(manifest, indent=2) + "\n"
-    downloads_left, downloads_right = st.columns(2)
-    with downloads_left:
-        st.download_button(
-            "Download prepared student notebook",
-            data=prepared_json,
-            file_name=prepared_name,
-            mime="application/x-ipynb+json",
-            type="primary",
-        )
-    with downloads_right:
-        st.download_button(
-            "Download preparation manifest",
-            data=manifest_json,
-            file_name=manifest_name,
-            mime="application/json",
-        )
+    manifest_json = json.dumps(package_manifest, indent=2) + "\n"
+    package_json = build_assignment_package(
+        assignment_id, prepared_json, config_json, manifest_json
+    )
+    st.download_button(
+        "Download assignment package (.zip)",
+        data=package_json,
+        file_name=f"{assignment_id}.zip",
+        mime="application/zip",
+        type="primary",
+    )
+    st.caption(
+        "The package contains the prepared notebook, configuration, manifest, and local-testing guide."
+    )
+    with st.expander("Individual downloads"):
+        individual_left, individual_right = st.columns(2)
+        with individual_left:
+            st.download_button(
+                "Prepared student notebook",
+                data=prepared_json,
+                file_name=package_notebook_name,
+                mime="application/x-ipynb+json",
+            )
+            st.download_button(
+                "Reviewed configuration",
+                data=config_json,
+                file_name="assignment-config.json",
+                mime="application/json",
+            )
+        with individual_right:
+            st.download_button(
+                "Preparation manifest",
+                data=manifest_json,
+                file_name="assignment.manifest.json",
+                mime="application/json",
+            )
     with st.expander("Preview configuration JSON"):
         st.code(config_json, language="json")
 

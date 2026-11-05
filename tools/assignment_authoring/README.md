@@ -64,10 +64,11 @@ type and role, text search, and bulk role/section updates. Detailed expanders
 remain available whenever a teacher needs to inspect a cell's full content or
 adjust an individual decision.
 
-When review is valid, the page provides three downloads: a prepared student
-notebook, a preparation manifest, and the reviewed JSON configuration as an
-optional record. Teachers do not need to run the Step 3 command-line tool when
-using the website. The uploaded notebook remains unchanged.
+When review is valid, the primary download is one assignment ZIP containing a
+prepared student notebook, a preparation manifest, the reviewed JSON
+configuration, and `LOCAL_TEST.md`. Individual files remain available as
+optional downloads. Teachers do not need to run the Step 3 command-line tool
+when using the website. The uploaded notebook remains unchanged.
 
 ## Step 3: prepare an approved assignment
 

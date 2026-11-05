@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 import unittest
 from pathlib import Path
+from zipfile import ZipFile
 
 
 AUTHORING_DIRECTORY = (
@@ -29,6 +31,12 @@ PREPARER_SPEC = importlib.util.spec_from_file_location("prepare_assignment", PRE
 assert PREPARER_SPEC is not None and PREPARER_SPEC.loader is not None
 preparer = importlib.util.module_from_spec(PREPARER_SPEC)
 PREPARER_SPEC.loader.exec_module(preparer)
+
+APP_PATH = AUTHORING_DIRECTORY / "app.py"
+APP_SPEC = importlib.util.spec_from_file_location("assignment_authoring_app", APP_PATH)
+assert APP_SPEC is not None and APP_SPEC.loader is not None
+authoring_app = importlib.util.module_from_spec(APP_SPEC)
+APP_SPEC.loader.exec_module(authoring_app)
 
 
 class AssignmentAuthoringTests(unittest.TestCase):
@@ -189,6 +197,28 @@ class AssignmentAuthoringTests(unittest.TestCase):
         self.assertIn(5, errors)
         self.assertTrue(any("used more than once" in error for error in errors[2]))
         self.assertTrue(any("used more than once" in error for error in errors[5]))
+
+    def test_assignment_package_contains_all_required_files(self) -> None:
+        package = authoring_app.build_assignment_package(
+            "optimiser",
+            '{"nbformat": 4}\n',
+            '{"cells": []}\n',
+            '{"prepared_notebook": "optimiser.ipynb"}\n',
+        )
+
+        with ZipFile(io.BytesIO(package)) as archive:
+            self.assertEqual(
+                sorted(archive.namelist()),
+                [
+                    "optimiser/LOCAL_TEST.md",
+                    "optimiser/assignment-config.json",
+                    "optimiser/assignment.manifest.json",
+                    "optimiser/optimiser.ipynb",
+                ],
+            )
+            guide = archive.read("optimiser/LOCAL_TEST.md").decode("utf-8")
+        self.assertIn("jlpm run build", guide)
+        self.assertIn("optimiser.ipynb", guide)
 
     def test_preparation_writes_metadata_without_changing_inputs(self) -> None:
         notebook = {
