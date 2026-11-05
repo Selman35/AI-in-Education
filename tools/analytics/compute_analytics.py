@@ -371,7 +371,7 @@ def parse_cell_version_snapshots(path: str):
                     ),
                     "source": source,
                 }
-            snapshots.append(snapshot)
+            snapshots.append({"kind": record.get("kind", "save"), "cells": snapshot})
     return snapshots
 
 
@@ -388,7 +388,11 @@ def compute_cell_character_diff_stats(cell_version_log_path: str):
 
     stats = {}
     previous = {}
-    for current in snapshots:
+    for snapshot in snapshots:
+        current = snapshot["cells"]
+        if snapshot["kind"] == "baseline":
+            previous = current
+            continue
         for cell_id in previous.keys() | current.keys():
             old_cell = previous.get(cell_id, {"source": "", "label": None})
             new_cell = current.get(cell_id, {"source": "", "label": None})
@@ -430,7 +434,11 @@ def compute_cell_line_diff_stats(cell_version_log_path: str):
 
     stats = {}
     previous = {}
-    for current in snapshots:
+    for snapshot in snapshots:
+        current = snapshot["cells"]
+        if snapshot["kind"] == "baseline":
+            previous = current
+            continue
         for cell_id in previous.keys() | current.keys():
             old_cell = previous.get(cell_id, {"source": "", "label": None})
             new_cell = current.get(cell_id, {"source": "", "label": None})

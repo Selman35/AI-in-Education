@@ -159,17 +159,12 @@ class AnalyticsPipelineTests(unittest.TestCase):
         self.assertGreater(character_stats["task_1_code"]["char_diff_added_characters"], 0)
         self.assertGreater(character_stats["task_1_code"]["char_diff_removed_characters"], 0)
 
-    @unittest.expectedFailure
     def test_template_baseline_is_not_counted_as_student_work(self) -> None:
-        """Pending feature: an untouched template must not count as an addition.
-
-        This is intentionally an expected failure until notebook provisioning
-        writes a pre-student baseline snapshot. Keeping it visible prevents a
-        future change from silently treating template text as student work.
-        """
+        """A provisioned template baseline is not student-written content."""
         snapshots = [
             {
                 "timestamp": "2026-01-01T12:00:00.000Z",
+                "kind": "baseline",
                 "cells": [
                     {
                         "cell_id": "cell-a",
@@ -178,14 +173,26 @@ class AnalyticsPipelineTests(unittest.TestCase):
                         "source": "starter text\n",
                     }
                 ],
-            }
+            },
+            {
+                "timestamp": "2026-01-01T12:00:30.000Z",
+                "kind": "save",
+                "cells": [
+                    {
+                        "cell_id": "cell-a",
+                        "cell_index": 1,
+                        "template_cell_key": "task_1_code",
+                        "source": "starter text\nstudent answer\n",
+                    }
+                ],
+            },
         ]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "student.ipynb.jsonl"
             self.write_jsonl(path, snapshots)
             line_stats = analytics.compute_cell_line_diff_stats(str(path))
 
-        self.assertEqual(line_stats["task_1_code"]["added_lines"], 0)
+        self.assertEqual(line_stats["task_1_code"]["added_lines"], 1)
 
     def test_process_folder_generates_all_current_csv_reports(self) -> None:
         """A representative log produces coherent notebook- and cell-level CSVs."""

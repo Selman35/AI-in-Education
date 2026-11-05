@@ -16,7 +16,7 @@ import { IFocusChangeAutoSaveSettings } from './settings';
 import { diffLines } from 'diff';
 
 import { DocumentRegistry } from '@jupyterlab/docregistry';
-import { Cell } from '@jupyterlab/cells';
+import { Cell, ICellModel } from '@jupyterlab/cells';
 
 /**
  * Arguments to initialize FocusSaveTracker.
@@ -525,12 +525,86 @@ export class FocusChangeAutoSaveTracker {
     // Template cells have a semantic key that is shared by every student copy.
     // Positions can change for a moment while the template controller restores
     // a blocked structural edit, so they are deliberately not logged here.
-    const templateCellKey = activeCell.getMetadata('analytics_cell_key');
-    if (typeof templateCellKey === 'string' && templateCellKey.trim()) {
-      return `[cell label: ${templateCellKey.trim()}]`;
+    const templateCellKey = this.getTemplateCellKey(activeCell);
+    if (templateCellKey) {
+      return `[cell label: ${templateCellKey}]`;
     }
 
     return `[cell ${cellIndex + 1}]`;
+  }
+
+  /** Return the stable analytics key used by either assignment format. */
+  private getTemplateCellKey(cell: ICellModel): string | undefined {
+    const legacyKey = cell.getMetadata('analytics_cell_key');
+    if (typeof legacyKey === 'string' && legacyKey.trim()) {
+      return legacyKey.trim();
+    }
+    const authoring = cell.getMetadata('assignment_authoring');
+    if (!authoring || typeof authoring !== 'object' || Array.isArray(authoring)) {
+      return undefined;
+    }
+    const key = (authoring as Record<string, unknown>).analytics_key;
+    return typeof key === 'string' && key.trim() ? key.trim() : undefined;
+  }
+
+  private getSnapshotTemplateCellKey(cell: any): string | undefined {
+    const legacyKey = cell?.metadata?.analytics_cell_key;
+    if (typeof legacyKey === 'string' && legacyKey.trim()) {
+      return legacyKey.trim();
+    }
+    const key = cell?.metadata?.assignment_authoring?.analytics_key;
+    return typeof key === 'string' && key.trim() ? key.trim() : undefined;
+  }
+
+  private getAssignmentBaselineSnapshots(nb: any): Array<{
+    cell_id: string;
+    cell_index: number;
+    template_cell_key?: string;
+    source: string;
+  }> {
+    const templateCells =
+      nb?.metadata?.assignment_authoring?.baseline?.template_cells;
+    if (!Array.isArray(templateCells)) {
+      return [];
+    }
+    return templateCells
+      .map((cell: any, index: number) => {
+        if (!cell || typeof cell !== 'object') {
+          return null;
+        }
+        const content = cell.content;
+        const source =
+          typeof cell.source === 'string'
+            ? cell.source
+            : Array.isArray(content?.source)
+              ? content.source.join('')
+              : typeof content?.source === 'string'
+                ? content.source
+                : '';
+        const key =
+          typeof cell.analytics_key === 'string' && cell.analytics_key.trim()
+            ? cell.analytics_key.trim()
+            : this.getSnapshotTemplateCellKey(content);
+        return {
+          cell_id:
+            typeof cell.cell_id === 'string'
+              ? cell.cell_id
+              : `position_${index + 1}`,
+          cell_index: index + 1,
+          template_cell_key: key,
+          source
+        };
+      })
+      .filter(
+        (
+          cell: unknown
+        ): cell is {
+          cell_id: string;
+          cell_index: number;
+          template_cell_key?: string;
+          source: string;
+        } => cell !== null
+      );
   }
 
   private getChangeLocation(widget: Widget): string {
@@ -550,7 +624,10 @@ export class FocusChangeAutoSaveTracker {
    * source prevents a reload from comparing the whole notebook with empty
    * content and writing another misleading ``initial save`` entry.
    */
-  private async restorePersistedSaveState(logKey: string): Promise<void> {
+  private async restorePersistedSaveState(
+    logKey: string,
+    baselineContent = ''
+  ): Promise<void> {
     if (this._previousContent.has(logKey)) {
       return;
     }
@@ -573,7 +650,10 @@ export class FocusChangeAutoSaveTracker {
           continue;
         }
         try {
-          const snapshot = JSON.parse(line) as { cells?: unknown };
+          const snapshot = JSON.parse(line) as {
+            cells?: unknown;
+            kind?: unknown;
+          };
           if (!Array.isArray(snapshot.cells)) {
             continue;
           }
@@ -589,7 +669,9 @@ export class FocusChangeAutoSaveTracker {
               return undefined;
             })
             .filter((source): source is string => source !== undefined);
-          snapshotCount += 1;
+          if (snapshot.kind !== 'baseline') {
+            snapshotCount += 1;
+          }
           latestSources = sources;
         } catch {
           // Ignore an incomplete final line, for example after an interrupted save.
@@ -605,7 +687,7 @@ export class FocusChangeAutoSaveTracker {
       // A notebook without a prior snapshot genuinely needs an initial save.
     }
 
-    this._previousContent.set(logKey, '');
+    this._previousContent.set(logKey, baselineContent);
     this._stepCounters.set(logKey, 1);
   }
 
@@ -670,6 +752,7 @@ export class FocusChangeAutoSaveTracker {
         template_cell_key?: string;
         source: string;
       }> = [];
+      let baselineCellSnapshots: typeof currentCellSnapshots = [];
 
       try {
         // Try to parse as notebook and extract cell sources
@@ -687,10 +770,7 @@ export class FocusChangeAutoSaveTracker {
                       ? cell.id
                       : `position_${index + 1}`,
                   cell_index: index + 1,
-                  template_cell_key:
-                    typeof cell.metadata?.analytics_cell_key === 'string'
-                      ? cell.metadata.analytics_cell_key
-                      : undefined,
+                  template_cell_key: this.getSnapshotTemplateCellKey(cell),
                   source
                 };
               }
@@ -709,6 +789,7 @@ export class FocusChangeAutoSaveTracker {
           currentContent = currentCellSnapshots
             .map(cell => cell.source)
             .join('\n\n');
+          baselineCellSnapshots = this.getAssignmentBaselineSnapshots(nb);
         }
       } catch {
         // Not a notebook → just string‑ify the model
@@ -716,7 +797,10 @@ export class FocusChangeAutoSaveTracker {
       }
 
       const logKey = this.getLogKey(context);
-      await this.restorePersistedSaveState(logKey);
+      const baselineContent = baselineCellSnapshots
+        .map(cell => cell.source)
+        .join('\n\n');
+      await this.restorePersistedSaveState(logKey, baselineContent);
 
       const normalize = (text: string): string =>
         text.endsWith('\n') ? text : text + '\n';
@@ -825,15 +909,27 @@ export class FocusChangeAutoSaveTracker {
             );
           }
 
+          const baselineEntry = baselineCellSnapshots.length
+            ? JSON.stringify({
+                timestamp,
+                kind: 'baseline',
+                cells: baselineCellSnapshots
+              }) + '\n'
+            : '';
           const cellSnapshotEntry = JSON.stringify({
             timestamp,
+            kind: 'save',
             cells: currentCellSnapshots
           });
           try {
             await this._docManager.services.contents.save(cellSnapshotLogPath, {
               type: 'file',
               format: 'text',
-              content: previousCellSnapshotLog + cellSnapshotEntry + '\n'
+              content:
+                previousCellSnapshotLog +
+                (previousCellSnapshotLog ? '' : baselineEntry) +
+                cellSnapshotEntry +
+                '\n'
             });
           } catch (err) {
             console.error('Failed to write cell snapshot log:', err);

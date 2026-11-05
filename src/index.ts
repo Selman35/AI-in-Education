@@ -3,7 +3,12 @@ import {
   JupyterFrontEndPlugin
 } from '@jupyterlab/application';
 
-import { INotebookTracker, NotebookActions } from '@jupyterlab/notebook';
+import {
+  INotebookTracker,
+  NotebookActions,
+  runCell,
+  setCellExecutor
+} from '@jupyterlab/notebook';
 
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 
@@ -15,7 +20,10 @@ import { IMainMenu } from '@jupyterlab/mainmenu';
 import { FocusChangeAutoSaveTracker } from './tracker';
 import { FocusChangeAutoSaveSettings } from './settings';
 import { PLUGIN_ID } from './consts';
-import { AssignmentTemplateController } from './assignment_template';
+import {
+  AssignmentTemplateController,
+  isExecutionAllowedByAssignmentPolicy
+} from './assignment_template';
 
 /**
  * Initialization data for the jupyterlab_autosave_on_focus_change extension.
@@ -58,6 +66,26 @@ const extension: JupyterFrontEndPlugin<void> = {
     const assignmentTemplateController = new AssignmentTemplateController({
       notebookTracker
     });
+
+    // Route every standard JupyterLab execution command through the prepared
+    // assignment policy. Cells without assignment-authoring metadata use the
+    // normal executor unchanged, so existing notebooks and the pilot template
+    // retain their current execution behaviour.
+    try {
+      setCellExecutor({
+        runCell: async options => {
+          if (!isExecutionAllowedByAssignmentPolicy(options.cell.model)) {
+            return false;
+          }
+          return runCell(options);
+        }
+      });
+    } catch (error) {
+      console.warn(
+        'Could not install the assignment cell-execution policy:',
+        error
+      );
+    }
 
     document.addEventListener('copy', function(){
       const selection = window.getSelection()?.toString();

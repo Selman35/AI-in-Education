@@ -27,6 +27,12 @@ def json_fingerprint(value: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_value.encode("utf-8")).hexdigest()
 
 
+def source_text(cell: dict[str, Any]) -> str:
+    """Return a notebook cell source consistently as one string."""
+    source = cell.get("source", "")
+    return "".join(source) if isinstance(source, list) else str(source)
+
+
 def validate_notebook_matches_config(
     notebook: dict[str, Any], config: dict[str, Any], notebook_name: str
 ) -> list[str]:
@@ -81,14 +87,6 @@ def prepare_assignment(notebook: dict[str, Any], config: dict[str, Any]) -> dict
             "assignment_configuration_sha256": config_fingerprint,
         }
     )
-    notebook_metadata["assignment_authoring"] = {
-        "schema_version": CONFIG_SCHEMA_VERSION,
-        "source_notebook": config.get("source_notebook"),
-        "source_notebook_sha256": config.get("source_notebook_sha256"),
-        "configuration_sha256": config_fingerprint,
-        "structure": copy.deepcopy(config.get("structure", {})),
-    }
-
     for notebook_cell, configured_cell in zip(prepared["cells"], config["cells"]):
         cell_metadata = notebook_cell.setdefault("metadata", {})
         # This namespace is intentionally separate from analytics_cell_key:
@@ -101,6 +99,29 @@ def prepare_assignment(notebook: dict[str, Any], config: dict[str, Any]) -> dict
             "section": configured_cell.get("section", ""),
             "policy": copy.deepcopy(configured_cell["policy"]),
         }
+
+    template_cells = []
+    for notebook_cell, configured_cell in zip(prepared["cells"], config["cells"]):
+        template_cells.append(
+            {
+                "cell_id": notebook_cell.get("id"),
+                "analytics_key": configured_cell["analytics_key"],
+                # Preserve the complete original cell, including its policy,
+                # so a protected original can be restored after a reload.
+                "content": copy.deepcopy(notebook_cell),
+                "source": source_text(notebook_cell),
+            }
+        )
+
+    notebook_metadata["assignment_authoring"] = {
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "source_notebook": config.get("source_notebook"),
+        "source_notebook_sha256": config.get("source_notebook_sha256"),
+        "configuration_sha256": config_fingerprint,
+        "structure": copy.deepcopy(config.get("structure", {})),
+        "extra_cell_counters": {},
+        "baseline": {"template_cells": template_cells},
+    }
     return prepared
 
 

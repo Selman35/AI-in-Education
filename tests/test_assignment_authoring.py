@@ -273,6 +273,15 @@ class AssignmentAuthoringTests(unittest.TestCase):
             prepared["cells"][1]["metadata"]["assignment_authoring"]["analytics_key"],
             "answer_code",
         )
+        baseline_cells = prepared["metadata"]["assignment_authoring"]["baseline"]["template_cells"]
+        self.assertEqual(baseline_cells[0]["analytics_key"], "intro")
+        self.assertEqual(baseline_cells[1]["source"], "")
+        self.assertEqual(baseline_cells[1]["content"]["id"], "answer")
+        self.assertTrue(
+            baseline_cells[1]["content"]["metadata"]["assignment_authoring"][
+                "policy"
+            ]["source_editable"]
+        )
 
     def test_preparation_rejects_a_changed_source_notebook(self) -> None:
         notebook = {

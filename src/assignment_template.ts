@@ -18,6 +18,8 @@ interface IProtectedCell {
   content: nbformat.ICell;
   allowSourceEdit: boolean;
   allowExecution: boolean;
+  allowDeletion: boolean;
+  allowMove: boolean;
 }
 
 interface ITemplateState {
@@ -25,8 +27,75 @@ interface ITemplateState {
   protectedCells: Map<string, IProtectedCell>;
   initialCellIds: Set<string>;
   watchedEditableCellIds: Set<string>;
+  isGenericAssignment: boolean;
+  allowExtraCells: boolean;
   reconcileScheduled: boolean;
   confirmingName: boolean;
+}
+
+interface IAssignmentPolicy {
+  source_editable: boolean;
+  executable: boolean;
+  deletable: boolean;
+  movable: boolean;
+}
+
+interface IAuthoringCellMetadata {
+  template_cell: boolean;
+  analytics_key: string;
+  section: string;
+  policy: IAssignmentPolicy;
+}
+
+function assignmentPolicy(value: unknown): IAssignmentPolicy | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  const keys: Array<keyof IAssignmentPolicy> = [
+    'source_editable',
+    'executable',
+    'deletable',
+    'movable'
+  ];
+  if (!keys.every(key => typeof raw[key] === 'boolean')) {
+    return undefined;
+  }
+  return {
+    source_editable: raw.source_editable as boolean,
+    executable: raw.executable as boolean,
+    deletable: raw.deletable as boolean,
+    movable: raw.movable as boolean
+  };
+}
+
+function authoringCellMetadata(cell: ICellModel): IAuthoringCellMetadata | undefined {
+  const metadata = cell.getMetadata('assignment_authoring');
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return undefined;
+  }
+  const raw = metadata as Record<string, unknown>;
+  const policy = assignmentPolicy(raw.policy);
+  if (
+    !policy ||
+    typeof raw.template_cell !== 'boolean' ||
+    typeof raw.analytics_key !== 'string' ||
+    !raw.analytics_key.trim() ||
+    typeof raw.section !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    template_cell: raw.template_cell,
+    analytics_key: raw.analytics_key.trim(),
+    section: raw.section,
+    policy
+  };
+}
+
+/** Return whether a generic prepared-assignment cell may be executed. */
+export function isExecutionAllowedByAssignmentPolicy(cell: ICellModel): boolean {
+  return authoringCellMetadata(cell)?.policy.executable ?? true;
 }
 
 /**
@@ -110,7 +179,7 @@ export class AssignmentTemplateController {
   }
 
   private _trackPanel(panel: NotebookPanel): void {
-    if (this._states.has(panel) || !this._isAssignmentTemplate(panel)) {
+    if (this._states.has(panel)) {
       return;
     }
 
@@ -120,21 +189,35 @@ export class AssignmentTemplateController {
       return;
     }
 
-    for (let index = 0; index < model.cells.length; index++) {
-      const cell = model.cells.get(index);
-      if (!this._isProtectedCell(cell)) {
-        continue;
+    const genericEntries = this._genericTemplateEntries(panel);
+    const isGenericAssignment = genericEntries !== undefined;
+    if (!isGenericAssignment && !this._isAssignmentTemplate(panel)) {
+      return;
+    }
+
+    if (isGenericAssignment) {
+      for (const entry of genericEntries) {
+        protectedCells.set(entry.id, entry);
       }
-      protectedCells.set(cell.id, {
-        id: cell.id,
-        index,
-        content: this._copyCell(cell.toJSON()),
-        allowSourceEdit:
-          this._hasTag(cell, 'student-answer') ||
-          (this._hasTag(cell, NAME_TAG) &&
-            !this._analyticsMetadata(panel).identity_confirmed),
-        allowExecution: this._hasTag(cell, 'provided-data')
-      });
+    } else {
+      for (let index = 0; index < model.cells.length; index++) {
+        const cell = model.cells.get(index);
+        if (!this._isProtectedCell(cell)) {
+          continue;
+        }
+        protectedCells.set(cell.id, {
+          id: cell.id,
+          index,
+          content: this._copyCell(cell.toJSON()),
+          allowSourceEdit:
+            this._hasTag(cell, 'student-answer') ||
+            (this._hasTag(cell, NAME_TAG) &&
+              !this._analyticsMetadata(panel).identity_confirmed),
+          allowExecution: this._hasTag(cell, 'provided-data'),
+          allowDeletion: false,
+          allowMove: false
+        });
+      }
     }
 
     if (protectedCells.size === 0) {
@@ -148,6 +231,8 @@ export class AssignmentTemplateController {
       // cells are not added to this set, so the fixed template cannot grow.
       initialCellIds: new Set([...model.cells].map(cell => cell.id)),
       watchedEditableCellIds: new Set(),
+      isGenericAssignment,
+      allowExtraCells: isGenericAssignment && this._allowsExtraCells(panel),
       reconcileScheduled: false,
       confirmingName: false
     };
@@ -206,7 +291,11 @@ export class AssignmentTemplateController {
     node.addEventListener(
       'dragstart',
       event => {
-        if (this._protectedCellFromTarget(state, event.target)) {
+        const protectedCell = this._protectedCellFromTarget(
+          state,
+          event.target
+        );
+        if (protectedCell && !protectedCell.allowMove) {
           event.preventDefault();
         }
       },
@@ -224,7 +313,11 @@ export class AssignmentTemplateController {
     node.addEventListener(
       'contextmenu',
       event => {
-        if (this._protectedCellFromTarget(state, event.target)) {
+        const protectedCell = this._protectedCellFromTarget(
+          state,
+          event.target
+        );
+        if (protectedCell && !protectedCell.allowDeletion) {
           event.preventDefault();
         }
       },
@@ -241,17 +334,19 @@ export class AssignmentTemplateController {
           return;
         }
 
-        const isStructuralShortcut =
-          (event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) ||
-          ((event.ctrlKey || event.metaKey) &&
-            ['x', 'X', 'Backspace', 'Delete'].includes(event.key));
+        const isMoveShortcut =
+          event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key);
+        const isDeleteShortcut =
+          (event.ctrlKey || event.metaKey) &&
+          ['x', 'X', 'Backspace', 'Delete'].includes(event.key);
         const isExecutionShortcut =
           event.key === 'Enter' &&
           (event.shiftKey || event.ctrlKey || event.metaKey);
         if (
           (!protectedCell.allowSourceEdit &&
             !(protectedCell.allowExecution && isExecutionShortcut)) ||
-          isStructuralShortcut
+          (isMoveShortcut && !protectedCell.allowMove) ||
+          (isDeleteShortcut && !protectedCell.allowDeletion)
         ) {
           event.preventDefault();
           event.stopPropagation();
@@ -278,16 +373,26 @@ export class AssignmentTemplateController {
       return;
     }
 
-    // A template may only contain the cells it had when it was opened. This
-    // removes cells inserted through JupyterLab menus, toolbar buttons, or
-    // shortcuts before they can become unlabelled analytics cells.
-    for (let index = model.cells.length - 1; index >= 0; index--) {
-      const cell = model.cells.get(index);
-      if (
-        !state.protectedCells.has(cell.id) &&
-        !state.initialCellIds.has(cell.id)
-      ) {
-        model.sharedModel.deleteCell(index);
+    if (state.isGenericAssignment) {
+      if (state.allowExtraCells) {
+        this._labelExtraCells(state);
+      } else {
+        for (let index = model.cells.length - 1; index >= 0; index--) {
+          if (!state.protectedCells.has(model.cells.get(index).id)) {
+            model.sharedModel.deleteCell(index);
+          }
+        }
+      }
+    } else {
+      // A legacy template may only contain the cells it had when it was opened.
+      for (let index = model.cells.length - 1; index >= 0; index--) {
+        const cell = model.cells.get(index);
+        if (
+          !state.protectedCells.has(cell.id) &&
+          !state.initialCellIds.has(cell.id)
+        ) {
+          model.sharedModel.deleteCell(index);
+        }
       }
     }
 
@@ -299,6 +404,9 @@ export class AssignmentTemplateController {
     for (const entry of entries) {
       let currentIndex = this._cellIndex(model, entry.id);
       if (currentIndex === -1) {
+        if (entry.allowDeletion) {
+          continue;
+        }
         const sharedCell = model.sharedModel.insertCell(
           Math.min(entry.index, model.cells.length),
           this._copyCell(entry.content)
@@ -349,7 +457,7 @@ export class AssignmentTemplateController {
         actual.sharedModel.metadata = this._copyMetadata(expectedMetadata);
       }
 
-      if (currentIndex !== entry.index) {
+      if (!entry.allowMove && currentIndex !== entry.index) {
         model.sharedModel.moveCell(currentIndex, entry.index);
       }
     }
@@ -396,7 +504,9 @@ export class AssignmentTemplateController {
       index,
       content: { ...content, id: sharedCell.id },
       allowSourceEdit: false,
-      allowExecution: false
+      allowExecution: false,
+      allowDeletion: false,
+      allowMove: false
     });
     this._scheduleReconcile(state);
   }
@@ -451,6 +561,146 @@ export class AssignmentTemplateController {
     return (
       !!model && [...model.cells].some(cell => this._hasTag(cell, COURSE_TAG))
     );
+  }
+
+  private _genericTemplateEntries(
+    panel: NotebookPanel
+  ): IProtectedCell[] | undefined {
+    const metadata = panel.model?.getMetadata('assignment_authoring');
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return undefined;
+    }
+    const root = metadata as Record<string, unknown>;
+    if (root.schema_version !== 1) {
+      return undefined;
+    }
+    const baseline = root.baseline;
+    if (!baseline || typeof baseline !== 'object' || Array.isArray(baseline)) {
+      console.warn('Prepared assignment has no valid template baseline.');
+      return undefined;
+    }
+    const templateCells = (baseline as Record<string, unknown>).template_cells;
+    if (!Array.isArray(templateCells) || templateCells.length === 0) {
+      console.warn('Prepared assignment has no template cells.');
+      return undefined;
+    }
+
+    const entries: IProtectedCell[] = [];
+    for (let index = 0; index < templateCells.length; index++) {
+      const baselineCell = templateCells[index];
+      if (!baselineCell || typeof baselineCell !== 'object') {
+        return undefined;
+      }
+      const raw = baselineCell as Record<string, unknown>;
+      const cellId = raw.cell_id;
+      const content = raw.content;
+      if (
+        typeof cellId !== 'string' ||
+        !content ||
+        typeof content !== 'object' ||
+        Array.isArray(content)
+      ) {
+        return undefined;
+      }
+      const copiedContent = this._copyCell(content as nbformat.ICell);
+      const metadataValue = copiedContent.metadata?.assignment_authoring;
+      const policy = assignmentPolicy(
+        metadataValue && typeof metadataValue === 'object'
+          ? (metadataValue as Record<string, unknown>).policy
+          : undefined
+      );
+      if (!policy) {
+        return undefined;
+      }
+      entries.push({
+        id: cellId,
+        index,
+        content: copiedContent,
+        allowSourceEdit: policy.source_editable,
+        allowExecution: policy.executable,
+        allowDeletion: policy.deletable,
+        allowMove: policy.movable
+      });
+    }
+    return entries;
+  }
+
+  private _allowsExtraCells(panel: NotebookPanel): boolean {
+    const metadata = panel.model?.getMetadata('assignment_authoring');
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return false;
+    }
+    const structure = (metadata as Record<string, unknown>).structure;
+    return (
+      !!structure &&
+      typeof structure === 'object' &&
+      !Array.isArray(structure) &&
+      (structure as Record<string, unknown>).allow_extra_cells === true
+    );
+  }
+
+  private _labelExtraCells(state: ITemplateState): void {
+    const model = state.panel.model;
+    if (!model) {
+      return;
+    }
+    for (let index = 0; index < model.cells.length; index++) {
+      const cell = model.cells.get(index);
+      if (state.protectedCells.has(cell.id) || authoringCellMetadata(cell)) {
+        continue;
+      }
+      const section = this._nearestSection(model, index);
+      const kind = cell.type === 'code' ? 'code' : cell.type === 'markdown' ? 'explanation' : 'raw';
+      const analyticsKey = this._nextExtraCellKey(state.panel, section, kind);
+      cell.setMetadata('assignment_authoring', {
+        schema_version: 1,
+        template_cell: false,
+        analytics_key: analyticsKey,
+        role: 'unrestricted',
+        section,
+        policy: {
+          source_editable: true,
+          executable: true,
+          deletable: true,
+          movable: true
+        }
+      });
+    }
+  }
+
+  private _nearestSection(
+    model: NonNullable<NotebookPanel['model']>,
+    index: number
+  ): string {
+    for (let candidateIndex = index - 1; candidateIndex >= 0; candidateIndex--) {
+      const metadata = authoringCellMetadata(model.cells.get(candidateIndex));
+      if (metadata?.section) {
+        return metadata.section;
+      }
+    }
+    return 'general';
+  }
+
+  private _nextExtraCellKey(
+    panel: NotebookPanel,
+    section: string,
+    kind: string
+  ): string {
+    const metadata = panel.model?.getMetadata('assignment_authoring');
+    const root =
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? this._copyMetadata(metadata as object)
+        : {};
+    const counters =
+      root.extra_cell_counters && typeof root.extra_cell_counters === 'object'
+        ? this._copyMetadata(root.extra_cell_counters)
+        : {};
+    const counterName = `${section}:${kind}`;
+    const next = Math.max(2, Number(counters[counterName]) || 2);
+    counters[counterName] = next + 1;
+    root.extra_cell_counters = counters;
+    panel.model?.setMetadata('assignment_authoring', root);
+    return `${section}_${kind}_${next}`;
   }
 
   private _isProtectedCell(cell: ICellModel): boolean {
