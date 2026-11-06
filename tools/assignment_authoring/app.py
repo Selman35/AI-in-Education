@@ -41,6 +41,77 @@ ROLE_LABELS = {
     "unrestricted": "Unrestricted cell",
 }
 
+ROLE_DESCRIPTIONS = {
+    "locked_text": "Students can read this instruction, but cannot edit, move, delete, or run it.",
+    "starter_code": "Students can run the provided code, but cannot change, move, or delete it.",
+    "answer_code": "Students can write and run their answer, but cannot remove or move the original cell.",
+    "answer_markdown": "Students can write an explanation, but cannot remove or move the original cell.",
+    "unrestricted": "Students can edit, run, move, and delete this cell.",
+}
+
+
+def apply_page_theme(st: Any) -> None:
+    """Apply the calm, high-contrast visual treatment used by the local app."""
+    st.markdown(
+        """
+<style>
+    .stApp { background: linear-gradient(135deg, #f6f8fc 0%, #edf4f7 100%); }
+    [data-testid="stHeader"] { background: rgba(246, 248, 252, 0.85); }
+    h1, h2, h3 { color: #17324d; }
+    div[data-testid="stMetric"] {
+        background: #ffffff; border: 1px solid #dbe5ee; border-radius: 12px;
+        padding: 0.6rem 0.8rem; box-shadow: 0 2px 8px rgba(23, 50, 77, 0.05);
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: #ffffff; border-color: #dbe5ee; border-radius: 12px;
+        box-shadow: 0 2px 10px rgba(23, 50, 77, 0.05);
+    }
+    div.stButton > button { border-radius: 8px; font-weight: 600; }
+    div[data-testid="stCodeBlock"] { border-radius: 9px; }
+    .authoring-hero {
+        background: linear-gradient(120deg, #17324d, #246b7b); color: white;
+        padding: 1.25rem 1.5rem; border-radius: 14px; margin: 0.5rem 0 1.25rem;
+    }
+    .authoring-hero h2 { color: white; margin: 0 0 0.35rem; }
+    .authoring-hero p { margin: 0; opacity: 0.94; }
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def matching_cell_positions(
+    draft_cells: list[dict[str, Any]], reviewed_cells: list[dict[str, Any]], query: str
+) -> list[int]:
+    """Find cells by their visible content or current review fields."""
+    normalized = query.strip().lower()
+    if not normalized:
+        return []
+    positions = []
+    for draft_cell, reviewed_cell in zip(draft_cells, reviewed_cells):
+        searchable = " ".join(
+            [
+                draft_cell["source"],
+                reviewed_cell["analytics_key"],
+                reviewed_cell["section"],
+                reviewed_cell["role"],
+            ]
+        ).lower()
+        if normalized in searchable:
+            positions.append(draft_cell["position"])
+    return positions
+
+
+def adjacent_position(positions: list[int], current: int | None, direction: int) -> int | None:
+    """Return the previous or next cell position without wrapping around."""
+    if not positions:
+        return None
+    if current not in positions:
+        return positions[0]
+    index = positions.index(current)
+    target = index + direction
+    return positions[target] if 0 <= target < len(positions) else current
+
 
 def widget_prefix(draft_cell: dict[str, Any]) -> str:
     """Return stable Streamlit widget keys for one source-notebook cell."""
@@ -54,29 +125,43 @@ def initialise_review_state(
     upload_identity = (
         f"{draft['source_notebook']}:{draft.get('source_notebook_sha256', '')}"
     )
-    if st.session_state.get("assignment_authoring_upload") == upload_identity:
-        return
+    is_new_upload = (
+        st.session_state.get("assignment_authoring_upload") != upload_identity
+        or "assignment_authoring_editable_notebook" not in st.session_state
+    )
+    if is_new_upload:
+        st.session_state["assignment_authoring_upload"] = upload_identity
+        st.session_state["assignment_authoring_uploaded_notebook"] = copy.deepcopy(
+            uploaded_notebook
+        )
+        st.session_state["assignment_authoring_editable_notebook"] = copy.deepcopy(
+            uploaded_notebook
+        )
+        st.session_state["assignment_authoring_selected_position"] = (
+            draft["cells"][0]["position"] if draft["cells"] else None
+        )
 
     for draft_cell in draft["cells"]:
         prefix = widget_prefix(draft_cell)
-        st.session_state[f"{prefix}_role"] = draft_cell["proposed_role"]
-        st.session_state[f"{prefix}_key"] = draft_cell["proposed_key"]
-        st.session_state[f"{prefix}_section"] = draft_cell["proposed_section"]
-        st.session_state[f"{prefix}_show_advanced_permissions"] = False
+        values = {
+            f"{prefix}_role": draft_cell["proposed_role"],
+            f"{prefix}_key": draft_cell["proposed_key"],
+            f"{prefix}_section": draft_cell["proposed_section"],
+            f"{prefix}_show_advanced_permissions": False,
+            f"{prefix}_source": draft_cell["source"],
+        }
         default_policy = draft_cell["proposed_policy"]
         for permission, value in default_policy.items():
-            st.session_state[f"{prefix}_{permission}"] = value
-        st.session_state[f"{prefix}_source"] = draft_cell["source"]
-    st.session_state["assignment_authoring_upload"] = upload_identity
-    st.session_state["assignment_authoring_uploaded_notebook"] = copy.deepcopy(
-        uploaded_notebook
-    )
-    st.session_state["assignment_authoring_editable_notebook"] = copy.deepcopy(
-        uploaded_notebook
-    )
-    st.session_state["assignment_authoring_selected_position"] = (
-        draft["cells"][0]["position"] if draft["cells"] else None
-    )
+            values[f"{prefix}_{permission}"] = value
+        for key, value in values.items():
+            if is_new_upload:
+                st.session_state[key] = value
+            else:
+                # A browser can retain an older session after the app changes.
+                # Repair missing keys without discarding the teacher's review.
+                st.session_state.setdefault(key, value)
+
+    st.session_state.setdefault("assignment_authoring_selected_position", None)
 
 
 def editable_notebook(st: Any) -> dict[str, Any]:
@@ -305,12 +390,13 @@ def render_notebook_cell(
 ) -> None:
     """Render one read-only, notebook-like cell card in the canvas."""
     position = draft_cell["position"]
-    status = "Needs attention" if errors else "Ready"
+    status = "⚠ Needs attention" if errors else "✓ Ready"
+    cell_icon = "⌘" if reviewed_cell["cell_type"] == "code" else "¶"
     with st.container(border=True):
         left, right = st.columns([5, 1])
         with left:
             st.caption(
-                f"Cell {position} · {reviewed_cell['cell_type']} · "
+                f"{cell_icon} Cell {position} · {reviewed_cell['cell_type']} · "
                 f"{ROLE_LABELS[reviewed_cell['role']]} · "
                 f"key: {reviewed_cell['analytics_key'] or '—'} · {status}"
             )
@@ -373,17 +459,40 @@ def main() -> None:
         ) from error
 
     st.set_page_config(page_title="Notebook assignment authoring", layout="wide")
+    apply_page_theme(st)
     st.title("Notebook assignment authoring")
-    st.caption(
-        "Review an existing notebook locally and download a prepared student version. The uploaded file is never modified."
+    st.markdown(
+        """
+<div class="authoring-hero">
+  <h2>Turn a teaching notebook into a student-ready assignment.</h2>
+  <p>Review the notebook visually, choose what students can do in each cell, and download a prepared copy. Your uploaded notebook is never changed.</p>
+</div>
+        """,
+        unsafe_allow_html=True,
     )
+
+    with st.sidebar:
+        st.header("Teacher guide")
+        st.markdown(
+            """**1. Upload** a teaching notebook.
+
+**2. Select** a cell in the notebook view.
+
+**3. Review** its content and student permissions.
+
+**4. Export** the prepared assignment package."""
+        )
+        with st.expander("What do cell roles mean?"):
+            for role in sorted(VALID_ROLES):
+                st.markdown(f"**{ROLE_LABELS[role]}**  \\n+{ROLE_DESCRIPTIONS[role]}")
+        st.caption("Advanced permissions are only for exceptions to a role's normal behaviour.")
 
     with st.expander("How to use this page", expanded=True):
         st.markdown(
             """
 1. Upload an existing Jupyter notebook.
-2. Open each cell review and read the complete original cell content.
-3. Confirm or change its role, stable analytics key, and section.
+2. Select a cell in the notebook view.
+3. Review or change its source, role, stable key, and section in the side panel.
 4. Download the prepared student notebook once there are no validation errors.
 
 The uploaded notebook stays unchanged. The prepared notebook is downloaded as
@@ -396,7 +505,7 @@ permissions** only when one cell needs behaviour that differs from its role.
 
     uploaded = st.file_uploader("Upload an existing Jupyter notebook", type=["ipynb"])
     if uploaded is None:
-        st.info("Choose a notebook to create a reviewable assignment configuration.")
+        st.info("Choose a notebook to begin. Nothing is uploaded to a server or changed on disk.")
         return
 
     try:
@@ -428,6 +537,25 @@ permissions** only when one cell needs behaviour that differs from its role.
     reviewed_cells = [reviewed_cell_from_state(cell, st) for cell in draft["cells"]]
     errors_by_position = cell_validation_errors(reviewed_cells)
 
+    quick_left, quick_middle, quick_right = st.columns([2, 2, 3])
+    with quick_left:
+        st.metric("Ready cells", len(draft["cells"]) - len(errors_by_position), f"of {len(draft['cells'])}")
+    with quick_middle:
+        st.metric("Needs attention", len(errors_by_position))
+    with quick_right:
+        find_text = st.text_input(
+            "Find a cell",
+            placeholder="Search content, key, section, or role",
+        )
+        matches = matching_cell_positions(draft["cells"], reviewed_cells, find_text)
+        if find_text:
+            if matches:
+                if st.button(f"Go to first match (cell {matches[0]})", key="go_to_search_match"):
+                    st.session_state["assignment_authoring_selected_position"] = matches[0]
+                    st.rerun()
+            else:
+                st.caption("No matching cells.")
+
     st.subheader("Assignment notebook")
     st.caption(
         "Read the notebook as students will see it. Select a cell to edit its "
@@ -437,6 +565,26 @@ permissions** only when one cell needs behaviour that differs from its role.
     if selected_position not in {cell["position"] for cell in draft["cells"]}:
         selected_position = draft["cells"][0]["position"] if draft["cells"] else None
         st.session_state["assignment_authoring_selected_position"] = selected_position
+
+    navigation_left, navigation_middle, navigation_right = st.columns([1, 1, 5])
+    with navigation_left:
+        if st.button("← Previous", disabled=selected_position == 1, use_container_width=True):
+            st.session_state["assignment_authoring_selected_position"] = adjacent_position(
+                [cell["position"] for cell in draft["cells"]], selected_position, -1
+            )
+            st.rerun()
+    with navigation_middle:
+        if st.button(
+            "Next →",
+            disabled=selected_position == len(draft["cells"]),
+            use_container_width=True,
+        ):
+            st.session_state["assignment_authoring_selected_position"] = adjacent_position(
+                [cell["position"] for cell in draft["cells"]], selected_position, 1
+            )
+            st.rerun()
+    with navigation_right:
+        st.caption(f"Selected cell {selected_position or '—'} of {len(draft['cells'])}")
 
     notebook_column, inspector_column = st.columns([3, 2], gap="large")
     with notebook_column:

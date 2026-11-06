@@ -370,6 +370,51 @@ class AssignmentAuthoringTests(unittest.TestCase):
         self.assertEqual(fake_st.session_state[f"{second_prefix}_key"], "teacher_chosen_answer")
         self.assertEqual(fake_st.session_state["cell_1_key"], "header")
 
+    def test_state_initialisation_repairs_a_stale_browser_session(self) -> None:
+        notebook = {
+            "cells": [
+                {"id": "intro", "cell_type": "markdown", "source": "# Intro"},
+                {"id": "answer", "cell_type": "code", "source": ""},
+            ]
+        }
+        draft = scanner.build_draft_config(notebook, "example.ipynb")
+
+        class FakeStreamlit:
+            session_state: dict[str, object] = {}
+
+        fake_st = FakeStreamlit()
+        authoring_app.initialise_review_state(draft, notebook, fake_st)
+        del fake_st.session_state["cell_2_role"]
+        fake_st.session_state["cell_1_key"] = "teacher_choice"
+
+        authoring_app.initialise_review_state(draft, notebook, fake_st)
+
+        self.assertEqual(fake_st.session_state["cell_2_role"], "answer_code")
+        self.assertEqual(fake_st.session_state["cell_1_key"], "teacher_choice")
+
+    def test_search_and_navigation_helpers_use_current_review_values(self) -> None:
+        draft_cells = [
+            {"position": 1, "source": "# Introduction"},
+            {"position": 2, "source": "print(answer)"},
+            {"position": 3, "source": "Explain the result."},
+        ]
+        reviewed_cells = [
+            {"analytics_key": "header", "section": "intro", "role": "locked_text"},
+            {"analytics_key": "task_1_code", "section": "task_1", "role": "answer_code"},
+            {"analytics_key": "task_1_explanation", "section": "task_1", "role": "answer_markdown"},
+        ]
+
+        self.assertEqual(
+            authoring_app.matching_cell_positions(draft_cells, reviewed_cells, "task_1"),
+            [2, 3],
+        )
+        self.assertEqual(
+            authoring_app.matching_cell_positions(draft_cells, reviewed_cells, "print"), [2]
+        )
+        self.assertEqual(authoring_app.adjacent_position([1, 2, 3], 2, -1), 1)
+        self.assertEqual(authoring_app.adjacent_position([1, 2, 3], 2, 1), 3)
+        self.assertEqual(authoring_app.adjacent_position([1, 2, 3], 1, -1), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
