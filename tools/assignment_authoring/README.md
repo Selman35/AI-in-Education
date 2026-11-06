@@ -47,22 +47,25 @@ Then start the local browser app:
 streamlit run tools/assignment_authoring/app.py
 ```
 
-When the page opens, it explains the short review process. For every cell, the
-teacher can view its complete original content, then review its proposed key,
-role, and section. A role sets the normal student permissions; individual
+The page displays the entire notebook in reading order. Markdown is rendered
+as students will see it and code is displayed as formatted source. Select a
+cell to open its settings panel, where a teacher can edit its source, role,
+stable key, and section. A role sets the normal student permissions; individual
 permissions are available only under **Show advanced permissions** for
 exceptional cells. Course and assignment IDs are generated automatically from
 the names entered in the app.
+
+Source edits affect only the session-only editable copy and the exported
+prepared notebook; the uploaded file remains unchanged. Existing cell reviews
+are preserved after source edits. Use **Refresh suggestion for this cell** only
+when the deterministic suggestion should be recalculated for that cell.
 
 Before export, the page shows a live summary of the reviewed notebook: total
 cells, code and Markdown cell counts, section count, and the selected role
 distribution. If any validation issue remains, it is listed and downloads stay
 unavailable until it is resolved.
 
-The page also includes a compact overview table for all cells, filters for cell
-type and role, text search, and bulk role/section updates. Detailed expanders
-remain available whenever a teacher needs to inspect a cell's full content or
-adjust an individual decision.
+The summary identifies invalid cells and provides direct links to select them.
 
 When review is valid, the primary download is one assignment ZIP containing a
 prepared student notebook, a preparation manifest, the reviewed JSON

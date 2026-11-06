@@ -314,6 +314,62 @@ class AssignmentAuthoringTests(unittest.TestCase):
 
         self.assertTrue(any("content no longer matches" in error for error in errors))
 
+    def test_editable_source_exports_without_changing_uploaded_notebook(self) -> None:
+        uploaded = {
+            "cells": [
+                {"id": "intro", "cell_type": "markdown", "metadata": {}, "source": "# Intro"},
+                {"id": "answer", "cell_type": "code", "metadata": {}, "source": ""},
+            ]
+        }
+        editable = json.loads(json.dumps(uploaded))
+        authoring_app.update_cell_source(editable, 1, "# Updated intro")
+        draft = scanner.build_draft_config(editable, "example.ipynb")
+        reviewed = scanner.build_reviewed_config(
+            draft, "Course", "Assignment", False,
+            [
+                {"source_cell_id": cell["source_cell_id"], "position": cell["position"],
+                 "cell_type": cell["cell_type"], "analytics_key": cell["proposed_key"],
+                 "role": cell["proposed_role"], "section": cell["proposed_section"],
+                 "policy": cell["proposed_policy"]}
+                for cell in draft["cells"]
+            ],
+        )
+
+        prepared = preparer.prepare_assignment(editable, reviewed)
+
+        self.assertEqual(uploaded["cells"][0]["source"], "# Intro")
+        self.assertEqual(prepared["cells"][0]["source"], "# Updated intro")
+        self.assertEqual(
+            preparer.validate_notebook_matches_config(editable, reviewed, "example.ipynb"), []
+        )
+
+    def test_refreshing_one_suggestion_does_not_change_other_review_state(self) -> None:
+        notebook = {
+            "cells": [
+                {"id": "intro", "cell_type": "markdown", "source": "# Intro"},
+                {"id": "answer", "cell_type": "code", "source": ""},
+            ]
+        }
+        draft = scanner.build_draft_config(notebook, "example.ipynb")
+
+        class FakeStreamlit:
+            session_state: dict[str, object] = {}
+
+        fake_st = FakeStreamlit()
+        for cell in draft["cells"]:
+            prefix = authoring_app.widget_prefix(cell)
+            fake_st.session_state[f"{prefix}_role"] = cell["proposed_role"]
+            fake_st.session_state[f"{prefix}_key"] = cell["proposed_key"]
+            fake_st.session_state[f"{prefix}_section"] = cell["proposed_section"]
+        second_prefix = authoring_app.widget_prefix(draft["cells"][1])
+        fake_st.session_state[f"{second_prefix}_key"] = "teacher_chosen_answer"
+
+        authoring_app.update_cell_source(notebook, 1, "## Task 1")
+        authoring_app.refresh_selected_suggestion(notebook, "example.ipynb", 1, fake_st)
+
+        self.assertEqual(fake_st.session_state[f"{second_prefix}_key"], "teacher_chosen_answer")
+        self.assertEqual(fake_st.session_state["cell_1_key"], "header")
+
 
 if __name__ == "__main__":
     unittest.main()
