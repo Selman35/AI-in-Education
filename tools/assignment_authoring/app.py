@@ -484,7 +484,7 @@ def main() -> None:
         )
         with st.expander("What do cell roles mean?"):
             for role in sorted(VALID_ROLES):
-                st.markdown(f"**{ROLE_LABELS[role]}**  \\n+{ROLE_DESCRIPTIONS[role]}")
+                st.markdown(f"**{ROLE_LABELS[role]}**  \n{ROLE_DESCRIPTIONS[role]}")
         st.caption("Advanced permissions are only for exceptions to a role's normal behaviour.")
 
     with st.expander("How to use this page", expanded=True):
