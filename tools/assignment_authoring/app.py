@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import copy
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -113,6 +114,20 @@ def adjacent_position(positions: list[int], current: int | None, direction: int)
     return positions[target] if 0 <= target < len(positions) else current
 
 
+@lru_cache(maxsize=16)
+def cached_draft(notebook_json: str, source_notebook: str) -> dict[str, Any]:
+    """Cache deterministic scans; repeated UI navigation should not rescan cells."""
+    return build_draft_config(json.loads(notebook_json), source_notebook)
+
+
+def draft_for_notebook(notebook: dict[str, Any], source_notebook: str) -> dict[str, Any]:
+    """Return an independent cached draft for the current editable notebook."""
+    canonical_notebook = json.dumps(
+        notebook, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return copy.deepcopy(cached_draft(canonical_notebook, source_notebook))
+
+
 def widget_prefix(draft_cell: dict[str, Any]) -> str:
     """Return stable Streamlit widget keys for one source-notebook cell."""
     return f"cell_{draft_cell['position']}"
@@ -180,7 +195,7 @@ def suggested_cell_for_position(
     notebook: dict[str, Any], source_notebook: str, position: int
 ) -> dict[str, Any]:
     """Return fresh deterministic suggestions for one editable cell only."""
-    draft = build_draft_config(notebook, source_notebook)
+    draft = draft_for_notebook(notebook, source_notebook)
     return draft["cells"][position - 1]
 
 
@@ -386,7 +401,12 @@ def build_assignment_package(
 
 
 def render_notebook_cell(
-    draft_cell: dict[str, Any], reviewed_cell: dict[str, Any], selected: bool, errors: list[str], st: Any
+    draft_cell: dict[str, Any],
+    reviewed_cell: dict[str, Any],
+    selected: bool,
+    errors: list[str],
+    show_full_content: bool,
+    st: Any,
 ) -> None:
     """Render one read-only, notebook-like cell card in the canvas."""
     position = draft_cell["position"]
@@ -411,7 +431,13 @@ def render_notebook_cell(
                 st.rerun()
 
         source = draft_cell["source"]
-        if reviewed_cell["cell_type"] == "markdown":
+        if not selected and not show_full_content:
+            preview = draft_cell["source_preview"] or "(empty cell)"
+            if reviewed_cell["cell_type"] == "code":
+                st.code(preview, language="python")
+            else:
+                st.caption(preview)
+        elif reviewed_cell["cell_type"] == "markdown":
             st.markdown(source or "_Empty Markdown cell_")
         else:
             st.code(source or "# Empty code cell", language="python")
@@ -427,25 +453,79 @@ def render_selected_cell_inspector(
     prefix = widget_prefix(draft_cell)
     st.subheader(f"Cell {position} settings")
     st.caption(
-        "Edit the source and assignment settings for this cell. Changes apply "
-        "only to the downloadable prepared notebook."
+        "Edits stay in this panel until you apply them. This prevents the "
+        "notebook from rerendering while you type."
     )
+    advanced = st.checkbox(
+        "Edit advanced permissions",
+        key=f"{prefix}_show_advanced_permissions",
+        help="Use this only when the normal permissions for the selected role are not suitable.",
+    )
+    current_role = st.session_state[f"{prefix}_role"]
+    role_options = sorted(VALID_ROLES)
+    with st.form(f"selected_cell_form_{position}", border=False):
+        source = st.text_area(
+            "Cell source",
+            value=draft_cell["source"],
+            height=220,
+            help="Markdown is rendered in the notebook view; code is displayed as Python.",
+        )
+        role = st.selectbox(
+            "Role",
+            options=role_options,
+            index=role_options.index(current_role),
+            format_func=lambda value: ROLE_LABELS[value],
+        )
+        analytics_key = st.text_input(
+            "Stable analytics key",
+            value=st.session_state[f"{prefix}_key"],
+            help="Use lowercase letters, numbers, and underscores. This name appears in logs and analytics.",
+        )
+        section = st.text_input(
+            "Section or task key", value=st.session_state[f"{prefix}_section"]
+        )
+        permissions: dict[str, bool] | None = None
+        if advanced:
+            st.caption("These settings override the normal permissions of the selected role.")
+            permissions = {
+                permission: st.checkbox(
+                    label.replace("_", " ").capitalize(),
+                    value=st.session_state[f"{prefix}_{permission}"],
+                    key=f"pending_{prefix}_{permission}",
+                )
+                for permission, label in {
+                    "source_editable": "students may edit source",
+                    "executable": "students may run this cell",
+                    "deletable": "students may delete this original cell",
+                    "movable": "students may move this original cell",
+                }.items()
+            }
+        apply_column, refresh_column = st.columns(2)
+        with apply_column:
+            apply_changes = st.form_submit_button("Apply changes", type="primary", use_container_width=True)
+        with refresh_column:
+            refresh_suggestion = st.form_submit_button("Apply + refresh suggestion", use_container_width=True)
 
-    source = st.text_area(
-        "Cell source",
-        key=f"{prefix}_source",
-        height=220,
-        help="Markdown is shown rendered in the notebook preview; code is shown as Python.",
-    )
-    if source != draft_cell["source"]:
+    if apply_changes or refresh_suggestion:
         update_cell_source(editable, position, source)
-
-    if st.button("Refresh suggestion for this cell", key=f"refresh_cell_{position}"):
-        refresh_selected_suggestion(editable, st.session_state["assignment_authoring_source_name"], position, st)
+        if refresh_suggestion:
+            refresh_selected_suggestion(
+                editable, st.session_state["assignment_authoring_source_name"], position, st
+            )
+        else:
+            st.session_state[f"{prefix}_role"] = role
+            st.session_state[f"{prefix}_key"] = analytics_key.strip()
+            st.session_state[f"{prefix}_section"] = section.strip()
+            if permissions is None:
+                st.session_state[f"{prefix}_show_advanced_permissions"] = False
+                for permission, value in policy_for_role(role).items():
+                    st.session_state[f"{prefix}_{permission}"] = value
+            else:
+                for permission, value in permissions.items():
+                    st.session_state[f"{prefix}_{permission}"] = value
         st.rerun()
 
     st.info(f"Current suggestion: {draft_cell['suggestion_reason']}")
-    reviewed_cell_from_widget(draft_cell, st)
 
 
 def main() -> None:
@@ -510,14 +590,14 @@ permissions** only when one cell needs behaviour that differs from its role.
 
     try:
         notebook = notebook_from_upload(uploaded)
-        draft = build_draft_config(notebook, uploaded.name)
+        draft = draft_for_notebook(notebook, uploaded.name)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         st.error(str(error))
         return
     initialise_review_state(draft, notebook, st)
     st.session_state["assignment_authoring_source_name"] = uploaded.name
     notebook = editable_notebook(st)
-    draft = build_draft_config(notebook, uploaded.name)
+    draft = draft_for_notebook(notebook, uploaded.name)
 
     st.subheader("Assignment details")
     st.caption("Names are for teacher reference. Stable IDs are created automatically when you export.")
@@ -561,6 +641,11 @@ permissions** only when one cell needs behaviour that differs from its role.
         "Read the notebook as students will see it. Select a cell to edit its "
         "content, role, stable key, section, or exceptional permissions."
     )
+    show_full_content = st.checkbox(
+        "Show complete content for every cell",
+        value=False,
+        help="Off is faster for large notebooks. The selected cell always shows its full content.",
+    )
     selected_position = st.session_state["assignment_authoring_selected_position"]
     if selected_position not in {cell["position"] for cell in draft["cells"]}:
         selected_position = draft["cells"][0]["position"] if draft["cells"] else None
@@ -586,23 +671,24 @@ permissions** only when one cell needs behaviour that differs from its role.
     with navigation_right:
         st.caption(f"Selected cell {selected_position or '—'} of {len(draft['cells'])}")
 
-    notebook_column, inspector_column = st.columns([3, 2], gap="large")
-    with notebook_column:
-        for draft_cell, reviewed_cell in zip(draft["cells"], reviewed_cells):
-            render_notebook_cell(
-                draft_cell,
-                reviewed_cell,
-                draft_cell["position"] == selected_position,
-                errors_by_position.get(draft_cell["position"], []),
-                st,
-            )
-    with inspector_column:
-        selected_cell = next(
-            (cell for cell in draft["cells"] if cell["position"] == selected_position),
-            None,
-        )
+    selected_cell = next(
+        (cell for cell in draft["cells"] if cell["position"] == selected_position),
+        None,
+    )
+    with st.sidebar:
+        st.divider()
         if selected_cell is not None:
             render_selected_cell_inspector(selected_cell, notebook, st)
+
+    for draft_cell, reviewed_cell in zip(draft["cells"], reviewed_cells):
+        render_notebook_cell(
+            draft_cell,
+            reviewed_cell,
+            draft_cell["position"] == selected_position,
+            errors_by_position.get(draft_cell["position"], []),
+            show_full_content,
+            st,
+        )
 
     reviewed_cells = [reviewed_cell_from_state(cell, st) for cell in draft["cells"]]
 

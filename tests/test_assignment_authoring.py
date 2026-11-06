@@ -415,6 +415,19 @@ class AssignmentAuthoringTests(unittest.TestCase):
         self.assertEqual(authoring_app.adjacent_position([1, 2, 3], 2, 1), 3)
         self.assertEqual(authoring_app.adjacent_position([1, 2, 3], 1, -1), 1)
 
+    def test_cached_draft_returns_independent_review_data(self) -> None:
+        notebook = {
+            "cells": [
+                {"id": "intro", "cell_type": "markdown", "source": "# Intro"}
+            ]
+        }
+
+        first = authoring_app.draft_for_notebook(notebook, "example.ipynb")
+        first["cells"][0]["proposed_key"] = "changed_only_in_test"
+        second = authoring_app.draft_for_notebook(notebook, "example.ipynb")
+
+        self.assertEqual(second["cells"][0]["proposed_key"], "header")
+
 
 if __name__ == "__main__":
     unittest.main()
