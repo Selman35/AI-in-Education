@@ -22,3 +22,8 @@ jupyterlab_autosave_on_focus_change/labextension/
 jupyterlab_autosave_on_focus_change/_version.py
 
 # Local notebooks used for manual extension testing
+
+# Local downloaded assignment packages and manual JupyterLab test output.
+# Keep optimizing/.gitkeep tracked so the empty workspace is present in Git.
+optimizing/*
+!optimizing/.gitkeep
