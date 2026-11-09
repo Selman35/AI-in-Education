@@ -191,25 +191,24 @@ def update_cell_source(
     notebook["cells"][position - 1]["source"] = source
 
 
-def suggested_cell_for_position(
-    notebook: dict[str, Any], source_notebook: str, position: int
-) -> dict[str, Any]:
-    """Return fresh deterministic suggestions for one editable cell only."""
-    draft = draft_for_notebook(notebook, source_notebook)
-    return draft["cells"][position - 1]
-
-
-def refresh_selected_suggestion(
-    notebook: dict[str, Any], source_notebook: str, position: int, st: Any
+def apply_selected_cell_changes(
+    notebook: dict[str, Any],
+    draft_cell: dict[str, Any],
+    source: str,
+    role: str,
+    analytics_key: str,
+    section: str,
+    permissions: dict[str, bool] | None,
+    st: Any,
 ) -> None:
-    """Apply a fresh suggestion to one cell, leaving all other reviews intact."""
-    suggestion = suggested_cell_for_position(notebook, source_notebook, position)
-    prefix = widget_prefix(suggestion)
-    st.session_state[f"{prefix}_role"] = suggestion["proposed_role"]
-    st.session_state[f"{prefix}_key"] = suggestion["proposed_key"]
-    st.session_state[f"{prefix}_section"] = suggestion["proposed_section"]
-    st.session_state[f"{prefix}_show_advanced_permissions"] = False
-    for permission, value in suggestion["proposed_policy"].items():
+    """Save a teacher's selected-cell review without changing the toggle state."""
+    position = draft_cell["position"]
+    prefix = widget_prefix(draft_cell)
+    update_cell_source(notebook, position, source)
+    st.session_state[f"{prefix}_role"] = role
+    st.session_state[f"{prefix}_key"] = analytics_key.strip()
+    st.session_state[f"{prefix}_section"] = section.strip()
+    for permission, value in (permissions or policy_for_role(role)).items():
         st.session_state[f"{prefix}_{permission}"] = value
 
 
@@ -302,49 +301,6 @@ def reviewed_cell_from_widget(draft_cell: dict[str, Any], st: Any) -> dict[str, 
     return reviewed_cell_from_state(draft_cell, st)
 
 
-def review_overview_rows(
-    draft_cells: list[dict[str, Any]],
-    reviewed_cells: list[dict[str, Any]],
-    errors_by_position: dict[int, list[str]],
-) -> list[dict[str, str | int]]:
-    """Build compact rows for the teacher-facing notebook overview table."""
-    rows: list[dict[str, str | int]] = []
-    for draft_cell, reviewed_cell in zip(draft_cells, reviewed_cells):
-        position = reviewed_cell["position"]
-        messages = errors_by_position.get(position, [])
-        rows.append(
-            {
-                "Cell": position,
-                "Type": reviewed_cell["cell_type"],
-                "Section": reviewed_cell["section"] or "—",
-                "Role": ROLE_LABELS.get(reviewed_cell["role"], reviewed_cell["role"]),
-                "Stable key": reviewed_cell["analytics_key"] or "—",
-                "Preview": draft_cell["source_preview"] or "(empty cell)",
-                "Status": "Needs attention" if messages else "Ready",
-            }
-        )
-    return rows
-
-
-def apply_bulk_changes(
-    draft_cells: list[dict[str, Any]],
-    positions: list[int],
-    role: str | None,
-    section: str,
-    st: Any,
-) -> None:
-    """Apply an optional common role and section to selected reviewed cells."""
-    for draft_cell in draft_cells:
-        if draft_cell["position"] not in positions:
-            continue
-        prefix = widget_prefix(draft_cell)
-        if role:
-            st.session_state[f"{prefix}_role"] = role
-            st.session_state[f"{prefix}_show_advanced_permissions"] = False
-        if section.strip():
-            st.session_state[f"{prefix}_section"] = section.strip()
-
-
 def local_test_guide(assignment_id: str) -> str:
     """Return concise instructions bundled with a downloaded assignment package."""
     return f"""# Local assignment-package test
@@ -425,7 +381,7 @@ def render_notebook_cell(
                 "Selected" if selected else "Select",
                 key=f"select_cell_{position}",
                 disabled=selected,
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state["assignment_authoring_selected_position"] = position
                 st.rerun()
@@ -500,32 +456,29 @@ def render_selected_cell_inspector(
                     "movable": "students may move this original cell",
                 }.items()
             }
-        apply_column, refresh_column = st.columns(2)
-        with apply_column:
-            apply_changes = st.form_submit_button("Apply changes", type="primary", use_container_width=True)
-        with refresh_column:
-            refresh_suggestion = st.form_submit_button("Apply + refresh suggestion", use_container_width=True)
+        apply_changes = st.form_submit_button(
+            "Apply changes", type="primary", width="stretch"
+        )
 
-    if apply_changes or refresh_suggestion:
-        update_cell_source(editable, position, source)
-        if refresh_suggestion:
-            refresh_selected_suggestion(
-                editable, st.session_state["assignment_authoring_source_name"], position, st
-            )
-        else:
-            st.session_state[f"{prefix}_role"] = role
-            st.session_state[f"{prefix}_key"] = analytics_key.strip()
-            st.session_state[f"{prefix}_section"] = section.strip()
-            if permissions is None:
-                st.session_state[f"{prefix}_show_advanced_permissions"] = False
-                for permission, value in policy_for_role(role).items():
-                    st.session_state[f"{prefix}_{permission}"] = value
-            else:
-                for permission, value in permissions.items():
-                    st.session_state[f"{prefix}_{permission}"] = value
+    if apply_changes:
+        apply_selected_cell_changes(
+            editable,
+            draft_cell,
+            source,
+            role,
+            analytics_key,
+            section,
+            permissions,
+            st,
+        )
         st.rerun()
 
-    st.info(f"Current suggestion: {draft_cell['suggestion_reason']}")
+    st.info(
+        "Automatic suggestion: "
+        f"{draft_cell['suggestion_reason']}\n\n"
+        "Applying a source edit refreshes this explanation automatically, but "
+        "keeps your role, key, section, and permission choices."
+    )
 
 
 def main() -> None:
@@ -595,7 +548,6 @@ permissions** only when one cell needs behaviour that differs from its role.
         st.error(str(error))
         return
     initialise_review_state(draft, notebook, st)
-    st.session_state["assignment_authoring_source_name"] = uploaded.name
     notebook = editable_notebook(st)
     draft = draft_for_notebook(notebook, uploaded.name)
 
@@ -653,7 +605,7 @@ permissions** only when one cell needs behaviour that differs from its role.
 
     navigation_left, navigation_middle, navigation_right = st.columns([1, 1, 5])
     with navigation_left:
-        if st.button("← Previous", disabled=selected_position == 1, use_container_width=True):
+        if st.button("← Previous", disabled=selected_position == 1, width="stretch"):
             st.session_state["assignment_authoring_selected_position"] = adjacent_position(
                 [cell["position"] for cell in draft["cells"]], selected_position, -1
             )
@@ -662,7 +614,7 @@ permissions** only when one cell needs behaviour that differs from its role.
         if st.button(
             "Next →",
             disabled=selected_position == len(draft["cells"]),
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state["assignment_authoring_selected_position"] = adjacent_position(
                 [cell["position"] for cell in draft["cells"]], selected_position, 1

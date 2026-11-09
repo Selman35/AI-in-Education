@@ -343,7 +343,7 @@ class AssignmentAuthoringTests(unittest.TestCase):
             preparer.validate_notebook_matches_config(editable, reviewed, "example.ipynb"), []
         )
 
-    def test_refreshing_one_suggestion_does_not_change_other_review_state(self) -> None:
+    def test_applying_a_cell_review_preserves_teacher_choices(self) -> None:
         notebook = {
             "cells": [
                 {"id": "intro", "cell_type": "markdown", "source": "# Intro"},
@@ -361,14 +361,32 @@ class AssignmentAuthoringTests(unittest.TestCase):
             fake_st.session_state[f"{prefix}_role"] = cell["proposed_role"]
             fake_st.session_state[f"{prefix}_key"] = cell["proposed_key"]
             fake_st.session_state[f"{prefix}_section"] = cell["proposed_section"]
+            fake_st.session_state[f"{prefix}_show_advanced_permissions"] = True
         second_prefix = authoring_app.widget_prefix(draft["cells"][1])
         fake_st.session_state[f"{second_prefix}_key"] = "teacher_chosen_answer"
 
-        authoring_app.update_cell_source(notebook, 1, "## Task 1")
-        authoring_app.refresh_selected_suggestion(notebook, "example.ipynb", 1, fake_st)
+        authoring_app.apply_selected_cell_changes(
+            notebook,
+            draft["cells"][0],
+            "## Teacher-edited introduction",
+            "unrestricted",
+            "teacher_header",
+            "teacher_section",
+            {
+                "source_editable": True,
+                "executable": False,
+                "deletable": True,
+                "movable": False,
+            },
+            fake_st,
+        )
 
         self.assertEqual(fake_st.session_state[f"{second_prefix}_key"], "teacher_chosen_answer")
-        self.assertEqual(fake_st.session_state["cell_1_key"], "header")
+        self.assertEqual(fake_st.session_state["cell_1_key"], "teacher_header")
+        self.assertEqual(fake_st.session_state["cell_1_role"], "unrestricted")
+        self.assertEqual(notebook["cells"][0]["source"], "## Teacher-edited introduction")
+        self.assertFalse(fake_st.session_state["cell_1_executable"])
+        self.assertTrue(fake_st.session_state["cell_1_show_advanced_permissions"])
 
     def test_state_initialisation_repairs_a_stale_browser_session(self) -> None:
         notebook = {
