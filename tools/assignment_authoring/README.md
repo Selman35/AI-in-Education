@@ -67,11 +67,29 @@ unavailable until it is resolved.
 
 The summary identifies invalid cells and provides direct links to select them.
 
-When review is valid, the primary download is one assignment ZIP containing a
-prepared student notebook, a preparation manifest, the reviewed JSON
-configuration, and `LOCAL_TEST.md`. Individual files remain available as
-optional downloads. Teachers do not need to run the Step 3 command-line tool
+When review is valid, the primary download is one revisioned assignment ZIP,
+such as `assignment_1_r1.zip`. It contains the clean `teacher_source.ipynb`,
+prepared student notebook, preparation manifest, reviewed JSON configuration,
+and `LOCAL_TEST.md`. Individual source and prepared notebooks remain available
+as optional downloads. Teachers do not need to run the Step 3 command-line tool
 when using the website. The uploaded notebook remains unchanged.
+
+## Revise a downloaded assignment package
+
+Choose **Revise an assignment package** in the website and upload a ZIP that
+the website previously created. The package restores its course and assignment
+details plus every approved cell role, analytics key, section, and permission.
+
+To make structural changes in JupyterLab, edit the clean `teacher_source.ipynb`
+from that package, then upload both the original ZIP and the edited source in
+the revision flow. Cells with the same Jupyter cell ID keep their decisions;
+new or type-changed cells require review, and removals require confirmation.
+The next export receives the next revision number, for example
+`assignment_1_r2.zip`.
+
+Older website packages can also be reopened when their prepared notebook has a
+recoverable baseline. Their next export is converted to the current package
+format.
 
 ## Step 3: prepare an approved assignment
 

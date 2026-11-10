@@ -16,7 +16,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from scan_notebook import CONFIG_SCHEMA_VERSION, notebook_fingerprint, validate_reviewed_config
+from scan_notebook import (
+    CONFIG_SCHEMA_VERSION,
+    notebook_fingerprint,
+    source_cell_id,
+    validate_reviewed_config,
+)
 
 
 def json_fingerprint(value: dict[str, Any]) -> str:
@@ -31,6 +36,31 @@ def source_text(cell: dict[str, Any]) -> str:
     """Return a notebook cell source consistently as one string."""
     source = cell.get("source", "")
     return "".join(source) if isinstance(source, list) else str(source)
+
+
+def ensure_prepared_cell_ids(notebook: dict[str, Any], config_fingerprint: str) -> None:
+    """Give the exported copy valid, unique Jupyter cell IDs.
+
+    Imported notebooks may have no top-level IDs. The runtime policy controller
+    uses IDs to match baseline cells to the live notebook, so IDs are added only
+    to the prepared student copy and never to the teacher's uploaded source.
+    """
+    used_ids: set[str] = set()
+    for position, cell in enumerate(notebook["cells"], start=1):
+        cell_id = cell.get("id")
+        if isinstance(cell_id, str) and cell_id.strip() and cell_id not in used_ids:
+            used_ids.add(cell_id)
+            continue
+
+        counter = 0
+        while True:
+            seed = f"{config_fingerprint}:{position}:{counter}".encode("utf-8")
+            candidate = f"assignment_{hashlib.sha256(seed).hexdigest()[:20]}"
+            if candidate not in used_ids:
+                cell["id"] = candidate
+                used_ids.add(candidate)
+                break
+            counter += 1
 
 
 def validate_notebook_matches_config(
@@ -63,7 +93,7 @@ def validate_notebook_matches_config(
     ):
         if configured_cell.get("position") != position:
             errors.append(f"Configuration position is incorrect for cell {position}.")
-        if configured_cell.get("source_cell_id") != notebook_cell.get("id"):
+        if configured_cell.get("source_cell_id") != source_cell_id(notebook_cell, position):
             errors.append(f"Cell {position} does not match the reviewed source cell ID.")
         if configured_cell.get("cell_type") != notebook_cell.get("cell_type"):
             errors.append(f"Cell {position} does not match the reviewed cell type.")
@@ -74,6 +104,7 @@ def prepare_assignment(notebook: dict[str, Any], config: dict[str, Any]) -> dict
     """Return a metadata-enriched copy of a validated source notebook."""
     prepared = copy.deepcopy(notebook)
     config_fingerprint = json_fingerprint(config)
+    ensure_prepared_cell_ids(prepared, config_fingerprint)
     course = config.get("course", {})
     assignment = config.get("assignment", {})
 
@@ -87,7 +118,9 @@ def prepare_assignment(notebook: dict[str, Any], config: dict[str, Any]) -> dict
             "assignment_configuration_sha256": config_fingerprint,
         }
     )
-    for notebook_cell, configured_cell in zip(prepared["cells"], config["cells"]):
+    for position, (notebook_cell, configured_cell) in enumerate(
+        zip(prepared["cells"], config["cells"]), start=1
+    ):
         cell_metadata = notebook_cell.setdefault("metadata", {})
         # This namespace is intentionally separate from analytics_cell_key:
         # current pilot extension code treats that older field as protected.
@@ -101,10 +134,12 @@ def prepare_assignment(notebook: dict[str, Any], config: dict[str, Any]) -> dict
         }
 
     template_cells = []
-    for notebook_cell, configured_cell in zip(prepared["cells"], config["cells"]):
+    for position, (notebook_cell, configured_cell) in enumerate(
+        zip(prepared["cells"], config["cells"]), start=1
+    ):
         template_cells.append(
             {
-                "cell_id": notebook_cell.get("id"),
+                "cell_id": source_cell_id(notebook_cell, position),
                 "analytics_key": configured_cell["analytics_key"],
                 # Preserve the complete original cell, including its policy,
                 # so a protected original can be restored after a reload.

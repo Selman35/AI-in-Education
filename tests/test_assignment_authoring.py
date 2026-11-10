@@ -109,6 +109,21 @@ class AssignmentAuthoringTests(unittest.TestCase):
         self.assertEqual(notebook["metadata"], {"unchanged": True})
         self.assertEqual(notebook["cells"][0], {"id": "a", "cell_type": "code", "source": ""})
 
+    def test_legacy_metadata_cell_id_is_used_when_top_level_id_is_missing(self) -> None:
+        notebook = {
+            "cells": [
+                {
+                    "cell_type": "markdown",
+                    "metadata": {"id": "legacy-cell-id"},
+                    "source": "# Intro",
+                }
+            ]
+        }
+
+        draft = scanner.build_draft_config(notebook, "legacy.ipynb")
+
+        self.assertEqual(draft["cells"][0]["source_cell_id"], "legacy-cell-id")
+
     def test_reviewed_configuration_requires_unique_safe_keys(self) -> None:
         draft = {
             "source_notebook": "example.ipynb",
@@ -200,7 +215,9 @@ class AssignmentAuthoringTests(unittest.TestCase):
 
     def test_assignment_package_contains_all_required_files(self) -> None:
         package = authoring_app.build_assignment_package(
+            "optimiser_r1",
             "optimiser",
+            '{"nbformat": 4}\n',
             '{"nbformat": 4}\n',
             '{"cells": []}\n',
             '{"prepared_notebook": "optimiser.ipynb"}\n',
@@ -210,15 +227,173 @@ class AssignmentAuthoringTests(unittest.TestCase):
             self.assertEqual(
                 sorted(archive.namelist()),
                 [
-                    "optimiser/LOCAL_TEST.md",
-                    "optimiser/assignment-config.json",
-                    "optimiser/assignment.manifest.json",
-                    "optimiser/optimiser.ipynb",
+                    "optimiser_r1/LOCAL_TEST.md",
+                    "optimiser_r1/assignment-config.json",
+                    "optimiser_r1/assignment.manifest.json",
+                    "optimiser_r1/optimiser.ipynb",
+                    "optimiser_r1/teacher_source.ipynb",
                 ],
             )
-            guide = archive.read("optimiser/LOCAL_TEST.md").decode("utf-8")
+            guide = archive.read("optimiser_r1/LOCAL_TEST.md").decode("utf-8")
         self.assertIn("jlpm run build", guide)
         self.assertIn("optimiser.ipynb", guide)
+        self.assertIn("teacher_source.ipynb", guide)
+
+    def test_assignment_package_reopens_with_source_and_review(self) -> None:
+        notebook = {
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {"id": "intro", "cell_type": "markdown", "metadata": {}, "source": "# Intro"},
+                {"id": "answer", "cell_type": "code", "metadata": {}, "source": ""},
+            ],
+        }
+        draft = scanner.build_draft_config(notebook, "example.ipynb")
+        reviewed = scanner.build_reviewed_config(
+            draft, "Course", "Assignment", False,
+            [
+                {
+                    "source_cell_id": cell["source_cell_id"],
+                    "position": cell["position"],
+                    "cell_type": cell["cell_type"],
+                    "analytics_key": cell["proposed_key"],
+                    "role": cell["proposed_role"],
+                    "section": cell["proposed_section"],
+                    "policy": cell["proposed_policy"],
+                }
+                for cell in draft["cells"]
+            ],
+        )
+        prepared = preparer.prepare_assignment(notebook, reviewed)
+        context = {"package_id": "package-123", "revision": 1, "parent_revision": None}
+        manifest = authoring_app.build_package_manifest(
+            "example.ipynb", "assignment", notebook, prepared, reviewed, context
+        )
+        package = authoring_app.build_assignment_package(
+            "assignment_r1",
+            "assignment",
+            json.dumps(notebook),
+            json.dumps(prepared),
+            json.dumps(reviewed),
+            json.dumps(manifest),
+        )
+
+        loaded = authoring_app.load_assignment_package(package)
+
+        self.assertEqual(loaded["source_notebook"], notebook)
+        self.assertEqual(loaded["configuration"], reviewed)
+        self.assertFalse(loaded["legacy"])
+        self.assertEqual(loaded["package_context"], {
+            "package_id": "package-123", "revision": 2, "parent_revision": 1
+        })
+
+    def test_legacy_assignment_package_recovers_its_source(self) -> None:
+        notebook = {
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {"id": "intro", "cell_type": "markdown", "metadata": {}, "source": "# Intro"},
+                {"id": "answer", "cell_type": "code", "metadata": {}, "source": ""},
+            ],
+        }
+        draft = scanner.build_draft_config(notebook, "example.ipynb")
+        reviewed = scanner.build_reviewed_config(
+            draft, "Course", "Assignment", False,
+            [
+                {
+                    "source_cell_id": cell["source_cell_id"],
+                    "position": cell["position"],
+                    "cell_type": cell["cell_type"],
+                    "analytics_key": cell["proposed_key"],
+                    "role": cell["proposed_role"],
+                    "section": cell["proposed_section"],
+                    "policy": cell["proposed_policy"],
+                }
+                for cell in draft["cells"]
+            ],
+        )
+        prepared = preparer.prepare_assignment(notebook, reviewed)
+        old_manifest = preparer.build_manifest(
+            Path("example.ipynb"),
+            Path("assignment-config.json"),
+            Path("assignment.ipynb"),
+            notebook,
+            reviewed,
+        )
+        package = io.BytesIO()
+        with ZipFile(package, "w") as archive:
+            archive.writestr("assignment/assignment.ipynb", json.dumps(prepared))
+            archive.writestr("assignment/assignment-config.json", json.dumps(reviewed))
+            archive.writestr("assignment/assignment.manifest.json", json.dumps(old_manifest))
+
+        loaded = authoring_app.load_assignment_package(package.getvalue())
+
+        self.assertTrue(loaded["legacy"])
+        self.assertEqual(loaded["source_notebook"], notebook)
+        self.assertEqual(loaded["package_context"]["revision"], 2)
+
+    def test_external_source_revision_preserves_reviews_and_flags_structure_changes(self) -> None:
+        notebook = {
+            "cells": [
+                {"id": "intro", "cell_type": "markdown", "source": "# Intro"},
+                {"id": "answer", "cell_type": "code", "source": ""},
+            ]
+        }
+        draft = scanner.build_draft_config(notebook, "example.ipynb")
+        previous = scanner.build_reviewed_config(
+            draft, "Course", "Assignment", False,
+            [
+                {
+                    "source_cell_id": cell["source_cell_id"],
+                    "position": cell["position"],
+                    "cell_type": cell["cell_type"],
+                    "analytics_key": f"teacher_{cell['proposed_key']}",
+                    "role": cell["proposed_role"],
+                    "section": "teacher_section",
+                    "policy": cell["proposed_policy"],
+                }
+                for cell in draft["cells"]
+            ],
+        )
+        revised = {
+            "cells": [
+                {"id": "answer", "cell_type": "code", "source": "print('updated')"},
+                {"id": "extra", "cell_type": "markdown", "source": "Explain your work."},
+            ]
+        }
+        revised_draft = scanner.build_draft_config(revised, "example.ipynb")
+
+        restored, pending, removed = authoring_app.reviewed_cells_for_source(
+            revised_draft, previous
+        )
+
+        self.assertEqual(restored[0]["analytics_key"], "teacher_header_code")
+        self.assertEqual(restored[0]["position"], 1)
+        self.assertEqual(restored[0]["section"], "teacher_section")
+        self.assertEqual(pending, {"extra"})
+        self.assertEqual([cell["source_cell_id"] for cell in removed], ["intro"])
+
+        type_changed = {"cells": [{"id": "answer", "cell_type": "markdown", "source": "Now text"}]}
+        changed_draft = scanner.build_draft_config(type_changed, "example.ipynb")
+        _, changed_pending, _ = authoring_app.reviewed_cells_for_source(
+            changed_draft, previous
+        )
+        self.assertEqual(changed_pending, {"answer"})
+
+    def test_assignment_package_rejects_tampered_configuration(self) -> None:
+        package = authoring_app.build_assignment_package(
+            "sample_r1",
+            "sample",
+            '{"cells": []}',
+            '{"cells": []}',
+            '{"cells": []}',
+            '{"reviewed_configuration_sha256": "wrong"}',
+        )
+
+        with self.assertRaisesRegex(ValueError, "configuration does not match"):
+            authoring_app.load_assignment_package(package)
 
     def test_preparation_writes_metadata_without_changing_inputs(self) -> None:
         notebook = {
@@ -282,6 +457,47 @@ class AssignmentAuthoringTests(unittest.TestCase):
                 "policy"
             ]["source_editable"]
         )
+
+    def test_preparation_assigns_ids_to_imported_cells(self) -> None:
+        """Prepared copies give generic runtime policies stable cell targets."""
+        notebook = {
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {"cell_type": "markdown", "metadata": {}, "source": "# Intro"},
+                {"cell_type": "code", "metadata": {}, "source": ""},
+            ],
+        }
+        draft = scanner.build_draft_config(notebook, "imported.ipynb")
+        reviewed = scanner.build_reviewed_config(
+            draft, "Course", "Assignment", False,
+            [
+                {
+                    "source_cell_id": cell["source_cell_id"],
+                    "position": cell["position"],
+                    "cell_type": cell["cell_type"],
+                    "analytics_key": cell["proposed_key"],
+                    "role": cell["proposed_role"],
+                    "section": cell["proposed_section"],
+                    "policy": cell["proposed_policy"],
+                }
+                for cell in draft["cells"]
+            ],
+        )
+
+        prepared = preparer.prepare_assignment(notebook, reviewed)
+        prepared_again = preparer.prepare_assignment(notebook, reviewed)
+        ids = [cell["id"] for cell in prepared["cells"]]
+        baseline_ids = [
+            entry["cell_id"]
+            for entry in prepared["metadata"]["assignment_authoring"]["baseline"]["template_cells"]
+        ]
+
+        self.assertNotIn("id", notebook["cells"][0])
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(ids, baseline_ids)
+        self.assertEqual(ids, [cell["id"] for cell in prepared_again["cells"]])
 
     def test_preparation_rejects_a_changed_source_notebook(self) -> None:
         notebook = {

@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import copy
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from prepare_assignment import (
     build_manifest,
+    json_fingerprint,
     prepare_assignment,
     validate_notebook_matches_config,
 )
@@ -30,6 +32,7 @@ from scan_notebook import (
     cell_validation_errors,
     policy_for_role,
     review_summary,
+    notebook_fingerprint,
     validate_reviewed_config,
 )
 
@@ -49,6 +52,9 @@ ROLE_DESCRIPTIONS = {
     "answer_markdown": "Students can write an explanation, but cannot remove or move the original cell.",
     "unrestricted": "Students can edit, run, move, and delete this cell.",
 }
+
+PACKAGE_SCHEMA_VERSION = 2
+TEACHER_SOURCE_FILENAME = "teacher_source.ipynb"
 
 
 def apply_page_theme(st: Any) -> None:
@@ -134,12 +140,18 @@ def widget_prefix(draft_cell: dict[str, Any]) -> str:
 
 
 def initialise_review_state(
-    draft: dict[str, Any], uploaded_notebook: dict[str, Any], st: Any
+    draft: dict[str, Any],
+    uploaded_notebook: dict[str, Any],
+    st: Any,
+    restored_cells: list[dict[str, Any]] | None = None,
+    assignment_details: dict[str, Any] | None = None,
+    package_context: dict[str, Any] | None = None,
+    pending_review_ids: set[str] | None = None,
+    removed_cells: list[dict[str, Any]] | None = None,
 ) -> None:
     """Initialise or reset review widgets when the uploaded notebook changes."""
-    upload_identity = (
-        f"{draft['source_notebook']}:{draft.get('source_notebook_sha256', '')}"
-    )
+    package_identity = (package_context or {}).get("package_id", "new")
+    upload_identity = f"{package_identity}:{draft['source_notebook']}:{draft.get('source_notebook_sha256', '')}"
     is_new_upload = (
         st.session_state.get("assignment_authoring_upload") != upload_identity
         or "assignment_authoring_editable_notebook" not in st.session_state
@@ -155,18 +167,55 @@ def initialise_review_state(
         st.session_state["assignment_authoring_selected_position"] = (
             draft["cells"][0]["position"] if draft["cells"] else None
         )
+        st.session_state["assignment_authoring_package_context"] = copy.deepcopy(
+            package_context
+            or {
+                "package_id": str(uuid.uuid4()),
+                "revision": 1,
+                "parent_revision": None,
+            }
+        )
+        st.session_state["assignment_authoring_pending_review_ids"] = set(
+            pending_review_ids or set()
+        )
+        st.session_state["assignment_authoring_removed_cells"] = copy.deepcopy(
+            removed_cells or []
+        )
+        st.session_state["assignment_authoring_removed_cells_confirmed"] = False
 
+        course = (assignment_details or {}).get("course", {})
+        assignment = (assignment_details or {}).get("assignment", {})
+        structure = (assignment_details or {}).get("structure", {})
+        st.session_state["assignment_authoring_course_name"] = str(
+            course.get("name", draft["course"]["proposed_name"])
+        )
+        st.session_state["assignment_authoring_assignment_name"] = str(
+            assignment.get("name", draft["assignment"]["proposed_name"])
+        )
+        st.session_state["assignment_authoring_allow_extra_cells"] = bool(
+            structure.get("allow_extra_cells", draft["structure"]["allow_extra_cells"])
+        )
+
+    restored_by_id = {
+        cell.get("source_cell_id"): cell
+        for cell in (restored_cells or [])
+        if isinstance(cell, dict)
+    }
     for draft_cell in draft["cells"]:
         prefix = widget_prefix(draft_cell)
+        restored = restored_by_id.get(draft_cell.get("source_cell_id"))
+        role = (restored or {}).get("role", draft_cell["proposed_role"])
+        policy = copy.deepcopy(
+            (restored or {}).get("policy", policy_for_role(role))
+        )
         values = {
-            f"{prefix}_role": draft_cell["proposed_role"],
-            f"{prefix}_key": draft_cell["proposed_key"],
-            f"{prefix}_section": draft_cell["proposed_section"],
-            f"{prefix}_show_advanced_permissions": False,
+            f"{prefix}_role": role,
+            f"{prefix}_key": (restored or {}).get("analytics_key", draft_cell["proposed_key"]),
+            f"{prefix}_section": (restored or {}).get("section", draft_cell["proposed_section"]),
+            f"{prefix}_show_advanced_permissions": policy != policy_for_role(role),
             f"{prefix}_source": draft_cell["source"],
         }
-        default_policy = draft_cell["proposed_policy"]
-        for permission, value in default_policy.items():
+        for permission, value in policy.items():
             values[f"{prefix}_{permission}"] = value
         for key, value in values.items():
             if is_new_upload:
@@ -210,6 +259,11 @@ def apply_selected_cell_changes(
     st.session_state[f"{prefix}_section"] = section.strip()
     for permission, value in (permissions or policy_for_role(role)).items():
         st.session_state[f"{prefix}_{permission}"] = value
+    pending_review_ids = set(
+        st.session_state.get("assignment_authoring_pending_review_ids", set())
+    )
+    pending_review_ids.discard(draft_cell.get("source_cell_id"))
+    st.session_state["assignment_authoring_pending_review_ids"] = pending_review_ids
 
 
 def reviewed_cell_from_state(draft_cell: dict[str, Any], st: Any) -> dict[str, Any]:
@@ -236,10 +290,261 @@ def reviewed_cell_from_state(draft_cell: dict[str, Any], st: Any) -> dict[str, A
 
 def notebook_from_upload(uploaded_file: Any) -> dict[str, Any]:
     """Read and validate the uploaded notebook without writing it to disk."""
-    notebook = json.loads(uploaded_file.getvalue().decode("utf-8"))
+    return notebook_from_bytes(uploaded_file.getvalue())
+
+
+def notebook_from_bytes(payload: bytes) -> dict[str, Any]:
+    """Read a notebook payload and verify that it has a cells list."""
+    notebook = json.loads(payload.decode("utf-8"))
     if not isinstance(notebook.get("cells"), list):
         raise ValueError("The selected file is not a valid Jupyter notebook.")
     return notebook
+
+
+def json_from_bytes(payload: bytes, description: str) -> dict[str, Any]:
+    """Read one JSON object from an assignment-package entry."""
+    value = json.loads(payload.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"The package {description} must contain a JSON object.")
+    return value
+
+
+def package_entry_name(names: list[str], basename: str) -> str:
+    """Return exactly one archive entry matching a required package filename."""
+    matches = [name for name in names if name.rstrip("/").split("/")[-1] == basename]
+    if len(matches) != 1:
+        raise ValueError(f"The assignment package must contain exactly one '{basename}' file.")
+    return matches[0]
+
+
+def archive_sibling(entry_name: str, sibling_name: str) -> str:
+    """Return a filename inside the same archive directory as an entry."""
+    parent = entry_name.rsplit("/", 1)[0] if "/" in entry_name else ""
+    return f"{parent}/{sibling_name}" if parent else sibling_name
+
+
+def source_from_legacy_prepared_notebook(prepared: dict[str, Any]) -> dict[str, Any]:
+    """Recover a source notebook from the baseline kept by version-one packages.
+
+    Early website packages did not include a clean source notebook. Their prepared
+    notebook does, however, retain the original cells in its baseline metadata.
+    This recovery path lets those packages be revised while removing only metadata
+    added by the authoring workflow.
+    """
+    authoring = prepared.get("metadata", {}).get("assignment_authoring", {})
+    baseline = authoring.get("baseline", {}).get("template_cells", [])
+    if not isinstance(baseline, list) or not baseline:
+        raise ValueError(
+            "This older assignment package has no recoverable teacher source notebook."
+        )
+
+    source = copy.deepcopy(prepared)
+    source["cells"] = []
+    for entry in baseline:
+        content = entry.get("content") if isinstance(entry, dict) else None
+        if not isinstance(content, dict):
+            raise ValueError("The older package has an invalid baseline cell record.")
+        cell = copy.deepcopy(content)
+        metadata = cell.get("metadata")
+        if isinstance(metadata, dict):
+            metadata.pop("assignment_authoring", None)
+        source["cells"].append(cell)
+
+    metadata = source.get("metadata")
+    if isinstance(metadata, dict):
+        metadata.pop("assignment_authoring", None)
+        analytics = metadata.get("student_analytics")
+        if isinstance(analytics, dict):
+            for key in (
+                "course_id",
+                "assignment_id",
+                "assignment_authoring_schema_version",
+                "assignment_configuration_sha256",
+            ):
+                analytics.pop(key, None)
+            if not analytics:
+                metadata.pop("student_analytics", None)
+    return source
+
+
+def load_assignment_package(payload: bytes) -> dict[str, Any]:
+    """Load and validate a previously exported assignment package in memory."""
+    try:
+        archive = ZipFile(io.BytesIO(payload))
+    except Exception as error:
+        raise ValueError("The selected file is not a readable ZIP assignment package.") from error
+
+    with archive:
+        names = archive.namelist()
+        config_entry = package_entry_name(names, "assignment-config.json")
+        manifest_entry = package_entry_name(names, "assignment.manifest.json")
+        configuration = json_from_bytes(archive.read(config_entry), "configuration")
+        manifest = json_from_bytes(archive.read(manifest_entry), "manifest")
+
+        expected_config_fingerprint = manifest.get("reviewed_configuration_sha256")
+        if expected_config_fingerprint != json_fingerprint(configuration):
+            raise ValueError(
+                "The package configuration does not match its manifest. Please use an unmodified package ZIP."
+            )
+        config_errors = validate_reviewed_config(configuration)
+        if config_errors:
+            raise ValueError("The package configuration is invalid: " + " ".join(config_errors))
+
+        package_schema = manifest.get("assignment_package_schema_version")
+        is_legacy_package = package_schema is None
+        if is_legacy_package:
+            prepared_name = manifest.get("prepared_notebook")
+            if not isinstance(prepared_name, str):
+                raise ValueError("The older package manifest does not name its prepared notebook.")
+            prepared_entry = archive_sibling(config_entry, prepared_name)
+            if prepared_entry not in names:
+                raise ValueError("The older package is missing its prepared notebook.")
+            prepared_notebook = notebook_from_bytes(archive.read(prepared_entry))
+            stored_configuration_hash = (
+                prepared_notebook.get("metadata", {})
+                .get("assignment_authoring", {})
+                .get("configuration_sha256")
+            )
+            if stored_configuration_hash != json_fingerprint(configuration):
+                raise ValueError(
+                    "The older package prepared notebook does not match its configuration."
+                )
+            source_notebook = source_from_legacy_prepared_notebook(prepared_notebook)
+            # Older exports did not preserve reliable cell IDs or an exact clean
+            # source fingerprint. Upgrade their configuration from the baseline
+            # recovered above so all subsequent revisions use the current format.
+            configuration = copy.deepcopy(configuration)
+            recovered_draft = draft_for_notebook(
+                source_notebook,
+                str(configuration.get("source_notebook") or "teacher_source.ipynb"),
+            )
+            if len(recovered_draft["cells"]) != len(configuration.get("cells", [])):
+                raise ValueError(
+                    "The older package baseline does not match its saved cell review."
+                )
+            for draft_cell, configured_cell in zip(
+                recovered_draft["cells"], configuration["cells"]
+            ):
+                if configured_cell.get("cell_type") != draft_cell["cell_type"]:
+                    raise ValueError(
+                        "The older package baseline does not match its saved cell types."
+                    )
+                configured_cell["source_cell_id"] = draft_cell["source_cell_id"]
+                configured_cell["position"] = draft_cell["position"]
+            configuration["source_notebook_sha256"] = notebook_fingerprint(source_notebook)
+        else:
+            if package_schema != PACKAGE_SCHEMA_VERSION:
+                raise ValueError(
+                    f"This package uses unsupported schema version {package_schema}."
+                )
+            source_name = manifest.get("teacher_source_notebook")
+            if not isinstance(source_name, str):
+                raise ValueError("The package manifest does not name its teacher source notebook.")
+            source_entry = archive_sibling(config_entry, source_name)
+            if source_entry not in names:
+                raise ValueError("The package is missing its teacher source notebook.")
+            source_notebook = notebook_from_bytes(archive.read(source_entry))
+            if manifest.get("teacher_source_notebook_sha256") != notebook_fingerprint(source_notebook):
+                raise ValueError(
+                    "The teacher source notebook does not match the package manifest."
+                )
+            prepared_name = manifest.get("prepared_notebook")
+            if not isinstance(prepared_name, str):
+                raise ValueError("The package manifest does not name its prepared notebook.")
+            prepared_entry = archive_sibling(config_entry, prepared_name)
+            if prepared_entry not in names:
+                raise ValueError("The package is missing its prepared student notebook.")
+            prepared_notebook = notebook_from_bytes(archive.read(prepared_entry))
+            if manifest.get("prepared_notebook_sha256") != notebook_fingerprint(
+                prepared_notebook
+            ):
+                raise ValueError(
+                    "The prepared notebook does not match the package manifest."
+                )
+
+        source_name = str(configuration.get("source_notebook") or "teacher_source.ipynb")
+        matching_errors = validate_notebook_matches_config(
+            source_notebook, configuration, source_name
+        )
+        if matching_errors:
+            raise ValueError(
+                "The package source notebook does not match its saved review: "
+                + " ".join(matching_errors)
+            )
+
+    package_id = manifest.get("package_id")
+    if not isinstance(package_id, str) or not package_id:
+        package_id = f"legacy-{json_fingerprint(configuration)[:16]}"
+    current_revision = manifest.get("revision", 1)
+    if not isinstance(current_revision, int) or current_revision < 1:
+        raise ValueError("The package manifest has an invalid revision number.")
+
+    return {
+        "source_notebook": source_notebook,
+        "source_name": source_name,
+        "configuration": configuration,
+        "manifest": manifest,
+        "legacy": is_legacy_package,
+        "package_context": {
+            "package_id": package_id,
+            "revision": current_revision + 1,
+            "parent_revision": current_revision,
+        },
+    }
+
+
+def reviewed_cells_for_source(
+    draft: dict[str, Any], previous_configuration: dict[str, Any]
+) -> tuple[list[dict[str, Any]], set[str], list[dict[str, Any]]]:
+    """Carry reviews onto an externally revised source notebook by cell ID."""
+    previous_cells = {
+        cell.get("source_cell_id"): cell
+        for cell in previous_configuration.get("cells", [])
+        if isinstance(cell, dict) and isinstance(cell.get("source_cell_id"), str)
+    }
+    current_ids = {
+        cell["source_cell_id"]
+        for cell in draft["cells"]
+        if isinstance(cell.get("source_cell_id"), str)
+    }
+    reviewed_cells: list[dict[str, Any]] = []
+    pending_review_ids: set[str] = set()
+
+    for draft_cell in draft["cells"]:
+        previous = previous_cells.get(draft_cell.get("source_cell_id"))
+        if previous and previous.get("cell_type") == draft_cell["cell_type"]:
+            reviewed_cells.append(
+                {
+                    "source_cell_id": draft_cell["source_cell_id"],
+                    "position": draft_cell["position"],
+                    "cell_type": draft_cell["cell_type"],
+                    "analytics_key": previous["analytics_key"],
+                    "role": previous["role"],
+                    "section": previous.get("section", ""),
+                    "policy": copy.deepcopy(previous["policy"]),
+                }
+            )
+        else:
+            reviewed_cells.append(
+                {
+                    "source_cell_id": draft_cell["source_cell_id"],
+                    "position": draft_cell["position"],
+                    "cell_type": draft_cell["cell_type"],
+                    "analytics_key": draft_cell["proposed_key"],
+                    "role": draft_cell["proposed_role"],
+                    "section": draft_cell["proposed_section"],
+                    "policy": copy.deepcopy(draft_cell["proposed_policy"]),
+                }
+            )
+            if isinstance(draft_cell.get("source_cell_id"), str):
+                pending_review_ids.add(draft_cell["source_cell_id"])
+
+    removed_cells = [
+        cell
+        for cell_id, cell in previous_cells.items()
+        if cell_id not in current_ids
+    ]
+    return reviewed_cells, pending_review_ids, removed_cells
 
 
 def reviewed_cell_from_widget(draft_cell: dict[str, Any], st: Any) -> dict[str, Any]:
@@ -308,6 +613,10 @@ def local_test_guide(assignment_id: str) -> str:
 This package contains a prepared notebook and its review records. It does not
 include a copy of the JupyterLab extension.
 
+`teacher_source.ipynb` is the clean teacher version. Keep it separate from
+student submissions. To revise an assignment, reopen this package in the
+authoring website and, if needed, attach an edited copy of that source file.
+
 ## Run locally
 
 1. Extract this folder inside the existing `AI-in-Education` repository.
@@ -334,15 +643,20 @@ cell execution. Existing logging continues to use the configured logging root.
 
 
 def build_assignment_package(
+    package_name: str,
     assignment_id: str,
+    teacher_source_notebook_json: str,
     prepared_notebook_json: str,
     configuration_json: str,
     manifest_json: str,
 ) -> bytes:
     """Build the single ZIP download for a reviewed assignment."""
-    package_root = f"{assignment_id}/"
+    package_root = f"{package_name}/"
     package = io.BytesIO()
     with ZipFile(package, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr(
+            f"{package_root}{TEACHER_SOURCE_FILENAME}", teacher_source_notebook_json
+        )
         archive.writestr(
             f"{package_root}{assignment_id}.ipynb", prepared_notebook_json
         )
@@ -354,6 +668,36 @@ def build_assignment_package(
         )
         archive.writestr(f"{package_root}LOCAL_TEST.md", local_test_guide(assignment_id))
     return package.getvalue()
+
+
+def build_package_manifest(
+    source_notebook_name: str,
+    assignment_id: str,
+    teacher_source: dict[str, Any],
+    prepared_notebook: dict[str, Any],
+    configuration: dict[str, Any],
+    package_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a revision-aware manifest for a downloadable assignment package."""
+    manifest = build_manifest(
+        Path(source_notebook_name),
+        Path("assignment-config.json"),
+        Path(f"{assignment_id}.ipynb"),
+        teacher_source,
+        configuration,
+    )
+    manifest.update(
+        {
+            "assignment_package_schema_version": PACKAGE_SCHEMA_VERSION,
+            "package_id": package_context["package_id"],
+            "revision": package_context["revision"],
+            "parent_revision": package_context.get("parent_revision"),
+            "teacher_source_notebook": TEACHER_SOURCE_FILENAME,
+            "teacher_source_notebook_sha256": notebook_fingerprint(teacher_source),
+            "prepared_notebook_sha256": notebook_fingerprint(prepared_notebook),
+        }
+    )
+    return manifest
 
 
 def render_notebook_cell(
@@ -536,38 +880,160 @@ permissions** only when one cell needs behaviour that differs from its role.
             """
         )
 
-    uploaded = st.file_uploader("Upload an existing Jupyter notebook", type=["ipynb"])
-    if uploaded is None:
-        st.info("Choose a notebook to begin. Nothing is uploaded to a server or changed on disk.")
-        return
+    authoring_mode = st.segmented_control(
+        "Start from",
+        ["Create a new assignment", "Revise an assignment package"],
+        default="Create a new assignment",
+        required=True,
+        key="assignment_authoring_mode",
+        width="stretch",
+    )
+
+    restored_cells: list[dict[str, Any]] | None = None
+    assignment_details: dict[str, Any] | None = None
+    package_context: dict[str, Any] | None = None
+    pending_review_ids: set[str] = set()
+    removed_cells: list[dict[str, Any]] = []
+
+    if authoring_mode == "Create a new assignment":
+        uploaded = st.file_uploader(
+            "Upload an existing Jupyter notebook", type=["ipynb"], key="new_notebook_upload"
+        )
+        if uploaded is None:
+            st.info("Choose a notebook to begin. Nothing is uploaded to a server or changed on disk.")
+            return
+        try:
+            notebook = notebook_from_upload(uploaded)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            st.error(str(error))
+            return
+        source_notebook_name = uploaded.name
+    else:
+        package_upload = st.file_uploader(
+            "Upload an assignment package ZIP", type=["zip"], key="revision_package_upload"
+        )
+        if package_upload is None:
+            st.info(
+                "Upload a package previously downloaded from this website. "
+                "The ZIP establishes the assignment identity and saved review decisions."
+            )
+            return
+        try:
+            package = load_assignment_package(package_upload.getvalue())
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            st.error(str(error))
+            return
+
+        if package["legacy"]:
+            st.warning(
+                "This is an older package. Its clean source was recovered from the "
+                "prepared-notebook baseline and the next download will use the new package format."
+            )
+        else:
+            st.success(
+                f"Loaded revision {package['package_context']['parent_revision']} of this assignment."
+            )
+
+        source_notebook_name = package["source_name"]
+        notebook = package["source_notebook"]
+        assignment_details = package["configuration"]
+        package_context = package["package_context"]
+        revision_source = st.file_uploader(
+            "Optional updated teacher-source notebook",
+            type=["ipynb"],
+            key="revision_source_upload",
+            help=(
+                "Use this only after editing the clean teacher source outside the website. "
+                "The package ZIP remains the required assignment identifier."
+            ),
+        )
+        if revision_source is None:
+            restored_cells = copy.deepcopy(package["configuration"]["cells"])
+        else:
+            try:
+                notebook = notebook_from_upload(revision_source)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                st.error(str(error))
+                return
+            source_notebook_name = revision_source.name
+            revised_draft = draft_for_notebook(notebook, source_notebook_name)
+            (
+                restored_cells,
+                pending_review_ids,
+                removed_cells,
+            ) = reviewed_cells_for_source(revised_draft, package["configuration"])
+            st.caption(
+                "Existing cells with the same Jupyter cell ID retain their settings. "
+                "New or type-changed cells require review before export."
+            )
 
     try:
-        notebook = notebook_from_upload(uploaded)
-        draft = draft_for_notebook(notebook, uploaded.name)
+        draft = draft_for_notebook(notebook, source_notebook_name)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         st.error(str(error))
         return
-    initialise_review_state(draft, notebook, st)
+    initialise_review_state(
+        draft,
+        notebook,
+        st,
+        restored_cells=restored_cells,
+        assignment_details=assignment_details,
+        package_context=package_context,
+        pending_review_ids=pending_review_ids,
+        removed_cells=removed_cells,
+    )
     notebook = editable_notebook(st)
-    draft = draft_for_notebook(notebook, uploaded.name)
+    draft = draft_for_notebook(notebook, source_notebook_name)
 
     st.subheader("Assignment details")
     st.caption("Names are for teacher reference. Stable IDs are created automatically when you export.")
     details_left, details_right = st.columns(2)
     with details_left:
-        course_name = st.text_input("Course name", value=draft["course"]["proposed_name"])
+        course_name = st.text_input(
+            "Course name", key="assignment_authoring_course_name"
+        )
     with details_right:
         assignment_name = st.text_input(
-            "Assignment name", value=draft["assignment"]["proposed_name"]
+            "Assignment name", key="assignment_authoring_assignment_name"
         )
     allow_extra_cells = st.checkbox(
         "Allow students to add extra cells",
-        value=draft["structure"]["allow_extra_cells"],
+        key="assignment_authoring_allow_extra_cells",
         help="Extra cells receive stable keys automatically when the prepared notebook is opened.",
     )
 
     reviewed_cells = [reviewed_cell_from_state(cell, st) for cell in draft["cells"]]
     errors_by_position = cell_validation_errors(reviewed_cells)
+    source_revision_errors: list[str] = []
+    pending_review_ids = set(
+        st.session_state.get("assignment_authoring_pending_review_ids", set())
+    )
+    for draft_cell in draft["cells"]:
+        if draft_cell.get("source_cell_id") in pending_review_ids:
+            errors_by_position.setdefault(draft_cell["position"], []).append(
+                "This externally added or type-changed cell needs review. Open it and select Apply changes."
+            )
+            source_revision_errors.append(
+                f"Cell {draft_cell['position']} needs review after the external source update."
+            )
+
+    removed_cells = st.session_state.get("assignment_authoring_removed_cells", [])
+    if removed_cells:
+        removed_keys = ", ".join(
+            str(cell.get("analytics_key", "unnamed cell")) for cell in removed_cells
+        )
+        st.warning(
+            "The updated teacher source removes previously configured cells: "
+            + removed_keys
+        )
+        removal_confirmed = st.checkbox(
+            "I confirm that these configured cells should be removed from the next revision.",
+            key="assignment_authoring_removed_cells_confirmed",
+        )
+        if not removal_confirmed:
+            source_revision_errors.append(
+                "Confirm the removal of previously configured cells before exporting."
+            )
 
     quick_left, quick_middle, quick_right = st.columns([2, 2, 3])
     with quick_left:
@@ -652,7 +1118,8 @@ permissions** only when one cell needs behaviour that differs from its role.
         reviewed_cells,
     )
     errors = validate_reviewed_config(reviewed)
-    errors.extend(validate_notebook_matches_config(notebook, reviewed, uploaded.name))
+    errors.extend(validate_notebook_matches_config(notebook, reviewed, source_notebook_name))
+    errors.extend(source_revision_errors)
 
     errors_by_position = cell_validation_errors(reviewed_cells)
     summary = review_summary(reviewed_cells)
@@ -685,37 +1152,53 @@ permissions** only when one cell needs behaviour that differs from its role.
         st.caption("Downloads are unavailable until the review is valid.")
         return
 
-    st.success("The reviewed configuration is valid. The uploaded notebook has not changed.")
+    st.success("The reviewed configuration is valid. The source notebook has not changed on disk.")
     config_json = json.dumps(reviewed, indent=2) + "\n"
     prepared = prepare_assignment(notebook, reviewed)
-    uploaded_path = Path(uploaded.name)
-    assignment_id = reviewed["assignment"]["id"] or uploaded_path.stem
+    source_path = Path(source_notebook_name)
+    assignment_id = reviewed["assignment"]["id"] or source_path.stem
+    package_context = st.session_state["assignment_authoring_package_context"]
+    package_name = f"{assignment_id}_r{package_context['revision']}"
     package_notebook_name = f"{assignment_id}.ipynb"
-    package_manifest = build_manifest(
-        uploaded_path,
-        Path("assignment-config.json"),
-        Path(package_notebook_name),
+    package_manifest = build_package_manifest(
+        source_notebook_name,
+        assignment_id,
         notebook,
+        prepared,
         reviewed,
+        package_context,
     )
+    teacher_source_json = json.dumps(notebook, indent=1) + "\n"
     prepared_json = json.dumps(prepared, indent=1) + "\n"
     manifest_json = json.dumps(package_manifest, indent=2) + "\n"
     package_json = build_assignment_package(
-        assignment_id, prepared_json, config_json, manifest_json
+        package_name,
+        assignment_id,
+        teacher_source_json,
+        prepared_json,
+        config_json,
+        manifest_json,
     )
     st.download_button(
         "Download assignment package (.zip)",
         data=package_json,
-        file_name=f"{assignment_id}.zip",
+        file_name=f"{package_name}.zip",
         mime="application/zip",
         type="primary",
     )
     st.caption(
-        "The package contains the prepared notebook, configuration, manifest, and local-testing guide."
+        f"Revision {package_context['revision']} contains the clean teacher source, "
+        "prepared notebook, configuration, manifest, and local-testing guide."
     )
     with st.expander("Individual downloads"):
         individual_left, individual_right = st.columns(2)
         with individual_left:
+            st.download_button(
+                "Teacher source notebook",
+                data=teacher_source_json,
+                file_name=TEACHER_SOURCE_FILENAME,
+                mime="application/x-ipynb+json",
+            )
             st.download_button(
                 "Prepared student notebook",
                 data=prepared_json,

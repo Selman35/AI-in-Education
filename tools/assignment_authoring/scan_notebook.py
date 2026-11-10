@@ -34,6 +34,24 @@ def source_text(cell: dict[str, Any]) -> str:
     return "".join(source) if isinstance(source, list) else str(source)
 
 
+def source_cell_id(cell: dict[str, Any], position: int) -> str:
+    """Return a stable notebook cell identifier across Jupyter variants.
+
+    Modern notebooks store this as the top-level ``id`` field. Some legacy or
+    imported notebooks instead keep it in ``metadata.id``. Position is only a
+    final fallback for malformed notebooks without either identifier.
+    """
+    identifier = cell.get("id")
+    if isinstance(identifier, str) and identifier.strip():
+        return identifier
+    metadata = cell.get("metadata")
+    if isinstance(metadata, dict):
+        identifier = metadata.get("id")
+        if isinstance(identifier, str) and identifier.strip():
+            return identifier
+    return f"position_{position}"
+
+
 def notebook_fingerprint(notebook: dict[str, Any]) -> str:
     """Return a reproducible SHA-256 fingerprint for a notebook structure."""
     canonical_notebook = json.dumps(
@@ -288,7 +306,7 @@ def build_draft_config(notebook: dict[str, Any], source_notebook: str) -> dict[s
         key = stem if counters[stem] == 1 else f"{stem}_{counters[stem]}"
         cells.append(
             {
-                "source_cell_id": cell.get("id"),
+                "source_cell_id": source_cell_id(cell, position),
                 "position": position,
                 "cell_type": cell.get("cell_type", "raw"),
                 "source_preview": source.replace("\n", " ")[:160],
