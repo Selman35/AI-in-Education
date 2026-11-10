@@ -69,6 +69,7 @@ export class FocusChangeAutoSaveTracker {
   >();
   private _periodicSaveTimer: number | undefined;
   private _lastEditLogTime = new Map<string, number>();
+  private _lastAssignmentPresence = new Map<string, boolean>();
   private _loggingDirectoryPromises = new Map<string, Promise<void>>();
   private _loggingRoot = 'internal_diff_logs';
 
@@ -502,6 +503,12 @@ export class FocusChangeAutoSaveTracker {
       return;
     }
 
+    if (this._lastAssignmentPresence.get(context.path) === isActive) {
+      return;
+    }
+    // Update before queuing: focus and visibility events can arrive together.
+    this._lastAssignmentPresence.set(context.path, isActive);
+
     const timestamp = new Date().toISOString();
     const location = this.getChangeLocation(widget);
     const event = isActive ? 'assignment-active' : 'assignment-inactive';
@@ -695,6 +702,11 @@ export class FocusChangeAutoSaveTracker {
     success: boolean,
     cell: Cell
   ): Promise<void> {
+    // Markdown navigation can trigger NotebookActions.executed, but it is not
+    // a code execution and must not affect execution analytics.
+    if (cell.model.type !== 'code') {
+      return;
+    }
     const widget = this._shell.currentWidget!;
     const context = this._docManager.contextForWidget(widget);
     if (!context) {
@@ -825,9 +837,10 @@ export class FocusChangeAutoSaveTracker {
 
       if (diffBody.trim() !== '') {
         const step = this._stepCounters.get(logKey) ?? 1;
-        const location = this.getChangeLocation(widget);
         const headerLabel = step === 1 ? 'initial save' : `save ${step}`;
-        const header = `[${timestamp}]${location ? location + ' ' : ''}[${headerLabel}]`;
+        // A save is notebook-level. Structured snapshots retain the exact
+        // changed cell(s), so do not falsely label it as the selected cell.
+        const header = `[${timestamp}][${headerLabel}]`;
         const logEntry = `${header}\n${diffBody}\n`;
 
         const internalDiffLogPath = this.getLogPath('changes', logKey, 'log');
@@ -875,7 +888,7 @@ export class FocusChangeAutoSaveTracker {
           console.log('No previous snapshot log found:', snapshotLogPath);
         }
 
-        const snapshotHeader = `[${timestamp}]${location ? ' ' + location : ''}`;
+        const snapshotHeader = `[${timestamp}]`;
         const snapshotEntry = `${snapshotHeader}\n${currentContent}\n\n`;
 
         try {
