@@ -333,6 +333,25 @@ def compute_character_diff_stats(version_log_path: str):
     }
 
 
+def compute_character_diff_summary(cell_character_stats):
+    """Sum modern structured per-cell character changes for one notebook."""
+    if cell_character_stats is None:
+        return None
+    added = sum(
+        values["char_diff_added_characters"]
+        for values in cell_character_stats.values()
+    )
+    removed = sum(
+        values["char_diff_removed_characters"]
+        for values in cell_character_stats.values()
+    )
+    return {
+        "char_diff_added_characters": added,
+        "char_diff_removed_characters": removed,
+        "char_diff_net_character_change": added - removed,
+    }
+
+
 def parse_cell_version_snapshots(path: str):
     """Read structured per-cell snapshots written by newer extension versions.
 
@@ -785,7 +804,6 @@ def process_folder(folder: str, output_folder: str | None = None):
             VERSION_LOG_DIRNAME,
             os.path.basename(path),
         )
-        row.update(compute_character_diff_stats(version_path))
         cell_version_path = os.path.join(
             os.path.dirname(os.path.normpath(folder)),
             CELL_VERSION_LOG_DIRNAME,
@@ -793,6 +811,10 @@ def process_folder(folder: str, output_folder: str | None = None):
         )
         cell_character_stats = compute_cell_character_diff_stats(cell_version_path)
         cell_line_stats = compute_cell_line_diff_stats(cell_version_path)
+        row.update(
+            compute_character_diff_summary(cell_character_stats)
+            or compute_character_diff_stats(version_path)
+        )
         row.update(compute_line_diff_summary(cell_line_stats))
 
         # Per-cell

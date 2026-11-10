@@ -266,6 +266,11 @@ class AnalyticsPipelineTests(unittest.TestCase):
             self.assertEqual(overall.loc[0, "execution_status_success"], 1)
             self.assertIn("task_1_code_exec_success", overall.columns)
             self.assertIn("task_1_code_modified_lines", overall.columns)
+            self.assertGreater(overall.loc[0, "char_diff_added_characters"], 0)
+            self.assertEqual(
+                overall.loc[0, "char_diff_added_characters"],
+                overall.loc[0, "task_1_code_char_diff_added_characters"],
+            )
 
             execution = pd.read_csv(reports / "cell_execution_summary.csv")
             self.assertEqual(execution.loc[0, "cell"], "task_1_code")
