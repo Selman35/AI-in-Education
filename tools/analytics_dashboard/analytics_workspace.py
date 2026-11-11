@@ -31,6 +31,61 @@ REPORT_FILENAMES = {
     "clipboard_events": "clipboard_events.csv",
 }
 MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
+CELL_METRIC_SUFFIXES = tuple(
+    sorted(
+        (
+            "char_diff_added_characters",
+            "char_diff_removed_characters",
+            "char_diff_net_character_change",
+            "clipboard_lengths",
+            "clipboard_events",
+            "total_duration",
+            "working_duration",
+            "copy_events",
+            "cut_events",
+            "paste_events",
+            "exec_success",
+            "exec_error",
+            "exec_count",
+            "longest_idle_time",
+            "idle_time",
+            "idle_count",
+            "modified_lines",
+            "removed_lines",
+            "added_lines",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+OVERALL_ANALYTICS_COLUMNS = {
+    "total_duration",
+    "total_working_duration",
+    "total_clipboard_events",
+    "total_copy_events",
+    "total_cut_events",
+    "total_paste_events",
+    "clipboard_lengths",
+    "average_clipboard_length",
+    "clipboard_length_variance",
+    "execution_events_count",
+    "execution_status_success",
+    "execution_status_error",
+    "added_lines",
+    "removed_lines",
+    "modified_lines",
+    "total_idle_time",
+    "idle_episode_count",
+    "longest_idle_time",
+    "average_idle_time",
+    "active_session_count",
+    "total_active_session_duration",
+    "longest_active_session_duration",
+    "average_active_session_duration",
+    "char_diff_added_characters",
+    "char_diff_removed_characters",
+    "char_diff_net_character_change",
+}
 
 
 class DashboardInputError(ValueError):
@@ -236,6 +291,73 @@ def filtered_frame(
     if selected_students and "student" in result.columns:
         result = result[result["student"].isin(selected_students)]
     return result
+
+
+def cell_label_from_metric_column(column: object) -> str | None:
+    """Return a stable cell label from a flattened cell-level metric column."""
+    name = str(column)
+    if name in OVERALL_ANALYTICS_COLUMNS:
+        return None
+    for suffix in CELL_METRIC_SUFFIXES:
+        marker = f"_{suffix}"
+        if name.endswith(marker) and len(name) > len(marker):
+            return name[: -len(marker)]
+    return None
+
+
+def available_cell_labels(reports: Mapping[str, pd.DataFrame]) -> list[str]:
+    """List all stable cell labels referenced by the generated reports."""
+    labels: set[str] = set()
+    overview = reports.get("student_analytics")
+    if overview is not None:
+        labels.update(
+            label
+            for column in overview.columns
+            if (label := cell_label_from_metric_column(column)) is not None
+        )
+    mapping = reports.get("cell_mapping")
+    if mapping is not None and "cell_label" in mapping.columns:
+        labels.update(mapping["cell_label"].dropna().astype(str))
+    for report_name, cell_columns in {
+        "cell_execution_summary": ("cell",),
+        "clipboard_events": ("cell",),
+        "idle_events": ("start_cell", "next_cell"),
+        "active_sessions": ("start_cell", "end_cell"),
+    }.items():
+        report = reports.get(report_name)
+        if report is not None:
+            for column in cell_columns:
+                if column in report.columns:
+                    labels.update(report[column].dropna().astype(str))
+    return sorted(label for label in labels if label and label != "unknown")
+
+
+def filter_reports_to_cells(
+    reports: Mapping[str, pd.DataFrame], included_cells: Iterable[str]
+) -> dict[str, pd.DataFrame]:
+    """Hide excluded cell-level metrics and event rows without changing source data."""
+    included = set(included_cells)
+    filtered: dict[str, pd.DataFrame] = {}
+    for report_name, report in reports.items():
+        frame = report.copy()
+        if report_name == "student_analytics":
+            hidden_columns = [
+                column
+                for column in frame.columns
+                if (label := cell_label_from_metric_column(column)) is not None
+                and label not in included
+            ]
+            frame = frame.drop(columns=hidden_columns)
+        elif report_name == "cell_mapping" and "cell_label" in frame.columns:
+            frame = frame[frame["cell_label"].isin(included)]
+        elif report_name in {"cell_execution_summary", "clipboard_events"} and "cell" in frame.columns:
+            frame = frame[frame["cell"].isin(included)]
+        elif report_name == "idle_events" and "start_cell" in frame.columns:
+            frame = frame[frame["start_cell"].isin(included)]
+        elif report_name == "active_sessions" and "start_cell" in frame.columns:
+            frame = frame[frame["start_cell"].isin(included)]
+        filtered[report_name] = frame.reset_index(drop=True)
+    return filtered
 
 
 def aggregate_for_chart(

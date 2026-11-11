@@ -18,9 +18,11 @@ from analytics_workspace import (
     ProcessingResult,
     aggregate_for_chart,
     apply_group_mapping,
+    available_cell_labels,
     build_download_zip,
     categorical_columns,
     filtered_frame,
+    filter_reports_to_cells,
     numeric_columns,
     result_from_csv_uploads,
     run_raw_log_analytics,
@@ -33,6 +35,7 @@ def initialise_state(st: Any) -> None:
     st.session_state.setdefault("analytics_result", None)
     st.session_state.setdefault("analytics_group_warnings", [])
     st.session_state.setdefault("analytics_download", None)
+    st.session_state.setdefault("analytics_selected_cells", [])
 
 
 def apply_mapping(
@@ -219,6 +222,40 @@ def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame]) -> None:
     st.dataframe(plotted, hide_index=True, alt="Data currently shown in the custom chart")
 
 
+def render_cell_selection(st: Any, original_reports: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Let researchers hide whole cell-level metric groups from this session's views."""
+    available = available_cell_labels(original_reports)
+    if not available:
+        return original_reports
+
+    selected = [
+        cell for cell in st.session_state["analytics_selected_cells"] if cell in available
+    ]
+    if selected != st.session_state["analytics_selected_cells"]:
+        st.session_state["analytics_selected_cells"] = selected
+
+    with st.container(border=True):
+        st.subheader("Cell-level analytics")
+        st.caption(
+            "Choose the assignment cells to show. This hides related cell metrics and "
+            "event rows only in this website session; it does not alter raw logs or downloads."
+        )
+        all_cells, no_cells = st.columns(2)
+        if all_cells.button("Include all cells", key="include_all_cells"):
+            st.session_state["analytics_selected_cells"] = available
+            st.rerun()
+        if no_cells.button("Exclude all cells", key="exclude_all_cells"):
+            st.session_state["analytics_selected_cells"] = []
+            st.rerun()
+        st.multiselect(
+            "Included cells",
+            available,
+            key="analytics_selected_cells",
+            help="For example, remove course_header and participant_id while retaining task_1_code.",
+        )
+    return filter_reports_to_cells(original_reports, st.session_state["analytics_selected_cells"])
+
+
 def main() -> None:
     import streamlit as st
 
@@ -267,6 +304,7 @@ def main() -> None:
                         st.session_state["analytics_result"] = result
                         st.session_state["analytics_group_warnings"] = mapping_warnings
                         st.session_state["analytics_download"] = build_download_zip(result)
+                        st.session_state["analytics_selected_cells"] = available_cell_labels(result.reports)
                 except DashboardInputError as error:
                     st.error(str(error))
                 except Exception as error:
@@ -280,7 +318,7 @@ def main() -> None:
     for warning in [*result.warnings, *st.session_state["analytics_group_warnings"]]:
         st.warning(warning)
 
-    reports = result.reports
+    reports = render_cell_selection(st, result.reports)
     overview = reports.get("student_analytics")
     with st.container(horizontal=True):
         st.metric("Reports", len(reports), border=True)

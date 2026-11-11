@@ -16,8 +16,10 @@ from tools.analytics_dashboard.analytics_workspace import (
     ProcessingResult,
     aggregate_for_chart,
     apply_group_mapping,
+    available_cell_labels,
     build_download_zip,
     extract_log_archive,
+    filter_reports_to_cells,
     participant_id_from_student,
     read_csv_uploads,
     run_raw_log_analytics,
@@ -66,6 +68,31 @@ class AnalyticsWorkspaceTests(unittest.TestCase):
         count = aggregate_for_chart(frame, "group", None, None, "Count")
         self.assertEqual(mean.loc[mean["group"] == "ai", "value"].item(), 3)
         self.assertEqual(count.loc[count["group"] == "ai", "count"].item(), 2)
+
+    def test_filter_reports_to_cells_hides_only_cell_level_data(self) -> None:
+        reports = {
+            "student_analytics": pd.DataFrame(
+                {
+                    "student": ["aaa101"],
+                    "total_working_duration": [42],
+                    "course_header_total_duration": [2],
+                    "task_1_code_total_duration": [40],
+                }
+            ),
+            "cell_execution_summary": pd.DataFrame(
+                {"student": ["aaa101", "aaa101"], "cell": ["course_header", "task_1_code"]}
+            ),
+            "cell_mapping": pd.DataFrame(
+                {"student": ["aaa101", "aaa101"], "cell_label": ["course_header", "task_1_code"]}
+            ),
+        }
+        self.assertEqual(available_cell_labels(reports), ["course_header", "task_1_code"])
+        filtered = filter_reports_to_cells(reports, ["task_1_code"])
+        self.assertIn("total_working_duration", filtered["student_analytics"].columns)
+        self.assertNotIn("course_header_total_duration", filtered["student_analytics"].columns)
+        self.assertIn("task_1_code_total_duration", filtered["student_analytics"].columns)
+        self.assertEqual(filtered["cell_execution_summary"]["cell"].tolist(), ["task_1_code"])
+        self.assertEqual(filtered["cell_mapping"]["cell_label"].tolist(), ["task_1_code"])
 
     def test_download_zip_excludes_raw_uploads(self) -> None:
         result = ProcessingResult(
