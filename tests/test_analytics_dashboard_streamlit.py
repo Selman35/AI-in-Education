@@ -5,6 +5,10 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
+from tools.analytics_dashboard.analytics_workspace import ProcessingResult
+
 
 APP_PATH = Path(__file__).resolve().parents[1] / "tools" / "analytics_dashboard" / "app.py"
 
@@ -36,6 +40,26 @@ class AnalyticsDashboardStreamlitTests(unittest.TestCase):
         app.button[0].click().run()
         self.assertFalse(app.exception)
         self.assertTrue(app.error)
+
+    def test_custom_bar_chart_without_a_group_does_not_crash(self) -> None:
+        """A missing colour channel must not be passed to Altair as None."""
+        from streamlit.testing.v1 import AppTest
+
+        app = AppTest.from_file(str(APP_PATH), default_timeout=20)
+        app.session_state["analytics_result"] = ProcessingResult(
+            reports={
+                "student_analytics": pd.DataFrame(
+                    {"student": ["aaa101", "aaa102"], "example_metric": [2, 4]}
+                )
+            },
+            plots={},
+            warnings=(),
+            manifest={"input_type": "csv_reports"},
+        )
+        app.session_state["analytics_group_warnings"] = []
+        app.session_state["analytics_download"] = b"zip"
+        app.run()
+        self.assertFalse(app.exception)
 
 
 if __name__ == "__main__":

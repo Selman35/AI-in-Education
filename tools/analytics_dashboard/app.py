@@ -174,12 +174,14 @@ def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame]) -> None:
         return
     value_column = "count" if y is None or aggregation == "Count" else y
     color = None if group == "None" or group == x else alt.Color(f"{group}:N", title=group)
+    color_encoding = {"color": color} if color is not None else {}
     title = f"{value_column} by {x}"
 
     if chart_type in {"Bar", "Grouped bar"}:
         chart = alt.Chart(plotted, title=title).mark_bar().encode(
-            x=alt.X(f"{x}:N", title=x), y=alt.Y(f"{value_column}:Q", title=value_column), color=color,
+            x=alt.X(f"{x}:N", title=x), y=alt.Y(f"{value_column}:Q", title=value_column),
             tooltip=list(plotted.columns),
+            **color_encoding,
         )
     elif chart_type == "Scatter":
         if y is None:
@@ -187,29 +189,31 @@ def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame]) -> None:
             return
         chart = alt.Chart(plotted, title=title).mark_circle(size=70).encode(
             x=alt.X(f"{x}:Q" if x in numeric else f"{x}:N", title=x),
-            y=alt.Y(f"{y}:Q", title=y), color=color, tooltip=list(plotted.columns),
+            y=alt.Y(f"{y}:Q", title=y), tooltip=list(plotted.columns), **color_encoding,
         )
     elif chart_type == "Histogram":
         if y is None:
             st.warning("Histograms need a numeric value column.")
             return
         chart = alt.Chart(plotted, title=title).mark_bar().encode(
-            x=alt.X(f"{y}:Q", bin=True, title=y), y=alt.Y("count():Q", title="Rows"), color=color,
+            x=alt.X(f"{y}:Q", bin=True, title=y), y=alt.Y("count():Q", title="Rows"),
+            **color_encoding,
         )
     elif chart_type == "Box plot":
         if y is None:
             st.warning("Box plots need a numeric value column.")
             return
         chart = alt.Chart(plotted, title=title).mark_boxplot().encode(
-            x=alt.X(f"{y}:Q", title=y), y=alt.Y(f"{x}:N", title=x), color=color,
+            x=alt.X(f"{y}:Q", title=y), y=alt.Y(f"{x}:N", title=x),
             tooltip=list(plotted.columns),
+            **color_encoding,
         )
     else:
         date_columns = timestamp_columns(plotted)
         x_type = "T" if x in date_columns else "N"
         chart = alt.Chart(plotted, title=title).mark_line(point=True).encode(
             x=alt.X(f"{x}:{x_type}", title=x), y=alt.Y(f"{value_column}:Q", title=value_column),
-            color=color, tooltip=list(plotted.columns),
+            tooltip=list(plotted.columns), **color_encoding,
         )
     st.altair_chart(chart.interactive(), alt=f"Custom {chart_type.lower()} chart: {title}")
     st.dataframe(plotted, hide_index=True, alt="Data currently shown in the custom chart")
