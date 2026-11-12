@@ -18,11 +18,16 @@ from tools.analytics_dashboard.analytics_workspace import (
     apply_group_mapping,
     available_cell_labels,
     build_download_zip,
+    chart_defaults,
+    chart_png,
+    data_quality_findings,
     extract_log_archive,
     filter_reports_to_cells,
+    grouped_summary,
     participant_id_from_student,
     read_csv_uploads,
     run_raw_log_analytics,
+    search_rows,
     validate_group_mapping,
 )
 
@@ -68,6 +73,56 @@ class AnalyticsWorkspaceTests(unittest.TestCase):
         count = aggregate_for_chart(frame, "group", None, None, "Count")
         self.assertEqual(mean.loc[mean["group"] == "ai", "value"].item(), 3)
         self.assertEqual(count.loc[count["group"] == "ai", "count"].item(), 2)
+
+    def test_chart_defaults_and_png_export_use_loaded_data(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "student": ["aaa101", "aaa102"],
+                "group": ["ai", "non_ai"],
+                "total_working_duration": [42, 65],
+            }
+        )
+        defaults = chart_defaults(frame, "Grouped bar")
+        self.assertEqual(defaults["x"], "student")
+        self.assertEqual(defaults["y"], "total_working_duration")
+        self.assertEqual(defaults["group"], "group")
+
+        plotted = aggregate_for_chart(
+            frame, "student", "total_working_duration", "group", "Sum"
+        )
+        png = chart_png(
+            plotted,
+            "Grouped bar",
+            "student",
+            "total_working_duration",
+            "group",
+            "Working time by participant",
+            "Participant",
+            "Seconds",
+            "#1F77B4",
+        )
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_data_quality_search_and_cohort_summary(self) -> None:
+        reports = {
+            "student_analytics": pd.DataFrame(
+                {
+                    "student": ["aaa101__pilot", "aaa101__pilot", "bbb101__pilot"],
+                    "group": ["ai", "ai", "non_ai"],
+                    "total_working_duration": [42, -1, 65],
+                }
+            ),
+            "clipboard_events": pd.DataFrame(columns=["student", "event"]),
+        }
+        findings = data_quality_findings(reports)
+        self.assertTrue(findings["message"].str.contains("duplicate participant").any())
+        self.assertTrue(findings["message"].str.contains("negative values").any())
+        self.assertTrue(findings["message"].str.contains("no rows").any())
+
+        visible = search_rows(reports["student_analytics"], "bbb101")
+        self.assertEqual(visible["student"].tolist(), ["bbb101__pilot"])
+        summary = grouped_summary(reports["student_analytics"], "total_working_duration", "group")
+        self.assertEqual(set(summary["group"]), {"ai", "non_ai"})
 
     def test_filter_reports_to_cells_hides_only_cell_level_data(self) -> None:
         reports = {

@@ -41,8 +41,38 @@ The participant ID is the part of a `student` value before `__`. For example,
 
 ## Results
 
-The workspace provides preset views for working time, idle time, execution
-outcomes, clipboard distributions, and event tables. The custom chart builder
-works with any compatible uploaded CSV columns. Downloaded result packages
-contain generated CSVs, available PNG plots, and a manifest, but never the raw
-uploaded logs.
+The workspace provides a guided workflow with these views:
+
+- **Overview:** loaded datasets, overall participant analytics, and a
+  downloadable cohort summary for any numeric measure.
+- **Data quality:** structural warnings for missing participant labels,
+  duplicate overall participant rows, empty reports, and negative numeric
+  values. It checks report integrity, not the validity of research conclusions.
+- **Preset views:** established working-time, idle-time, execution-outcome, and
+  clipboard-distribution views. Their chart data and Vega-Lite specifications
+  can be downloaded individually.
+- **Event reports:** searchable event tables with a visible-column chooser and
+  a download for the currently displayed rows.
+- **Custom chart:** a flexible chart builder for any compatible report columns.
+
+The custom chart builder
+starts with a useful chart based on the selected data and updates the preview
+as settings change. It explains what each chart type needs and lets you choose
+the source columns, filters, aggregation, title, caption, axis labels, and
+colours. Download each custom chart as a PNG, the exact plotted table as CSV,
+or its Vega-Lite chart specification as JSON.
+
+Chart requirements are kept deliberately simple:
+
+- **Bar / grouped bar:** a category and either a numeric value or row count.
+- **Scatter:** two numeric columns.
+- **Histogram:** one numeric value.
+- **Box plot:** one category and one numeric value.
+- **Line:** a numeric value and an ordered category; timestamps work best on
+  the x-axis.
+
+Downloaded result packages contain generated CSVs, available PNG plots, and a
+manifest, but never the raw uploaded logs.
+
+Use **Start a new analysis** to remove uploads and derived results from the
+current browser session. This does not alter any local source files.

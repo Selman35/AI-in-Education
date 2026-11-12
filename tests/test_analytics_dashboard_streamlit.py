@@ -59,7 +59,48 @@ class AnalyticsDashboardStreamlitTests(unittest.TestCase):
         app.session_state["analytics_group_warnings"] = []
         app.session_state["analytics_download"] = b"zip"
         app.run()
+        app.segmented_control(key="analytics_workspace_view").set_value("Custom chart").run()
         self.assertFalse(app.exception)
+        self.assertGreaterEqual(len(app.get("download_button")), 3)
+
+    def test_all_workspace_views_render_for_a_complete_report_set(self) -> None:
+        from streamlit.testing.v1 import AppTest
+
+        app = AppTest.from_file(str(APP_PATH), default_timeout=20)
+        app.session_state["analytics_result"] = ProcessingResult(
+            reports={
+                "student_analytics": pd.DataFrame(
+                    {
+                        "student": ["aaa101__pilot", "bbb101__pilot"],
+                        "group": ["ai", "non_ai"],
+                        "total_working_duration": [42, 65],
+                        "total_idle_time": [4, 7],
+                        "execution_status_success": [3, 4],
+                        "execution_status_error": [1, 0],
+                    }
+                ),
+                "clipboard_events": pd.DataFrame(
+                    {
+                        "student": ["aaa101__pilot"],
+                        "event": ["paste"],
+                        "character_length": [12],
+                        "cell": ["task_1_code"],
+                    }
+                ),
+                "cell_execution_summary": pd.DataFrame(
+                    {"student": ["aaa101__pilot"], "cell": ["task_1_code"], "count": [4]}
+                ),
+            },
+            plots={"working_time.png": b"png"},
+            warnings=(),
+            manifest={"input_type": "csv_reports"},
+        )
+        app.session_state["analytics_group_warnings"] = []
+        app.session_state["analytics_download"] = b"zip"
+        app.run()
+        for view in ("Data quality", "Preset views", "Event reports", "Custom chart", "Download"):
+            app.segmented_control(key="analytics_workspace_view").set_value(view).run()
+            self.assertFalse(app.exception, view)
 
 
 if __name__ == "__main__":

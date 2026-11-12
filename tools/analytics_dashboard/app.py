@@ -21,14 +21,30 @@ from analytics_workspace import (
     available_cell_labels,
     build_download_zip,
     categorical_columns,
+    chart_defaults,
+    chart_png,
+    data_quality_findings,
     filtered_frame,
     filter_reports_to_cells,
+    grouped_summary,
     numeric_columns,
     result_from_csv_uploads,
     run_raw_log_analytics,
+    search_rows,
     timestamp_columns,
     validate_group_mapping,
 )
+
+
+CHART_TYPES = ["Bar", "Grouped bar", "Scatter", "Histogram", "Box plot", "Line"]
+CHART_GUIDANCE = {
+    "Bar": "Compare one value across categories, such as estimated working time by participant.",
+    "Grouped bar": "Compare the same value across categories and groups, such as AI and non-AI participants.",
+    "Scatter": "Explore the relationship between two numeric measures. It needs two numeric columns.",
+    "Histogram": "Show the distribution of one numeric measure, such as idle-time duration.",
+    "Box plot": "Compare numeric distributions across categories. It needs one category and one numeric measure.",
+    "Line": "Show a value over time or another ordered category. A timestamp column gives the clearest result.",
+}
 
 
 def initialise_state(st: Any) -> None:
@@ -36,6 +52,17 @@ def initialise_state(st: Any) -> None:
     st.session_state.setdefault("analytics_group_warnings", [])
     st.session_state.setdefault("analytics_download", None)
     st.session_state.setdefault("analytics_selected_cells", [])
+
+
+def clear_analysis_session(st: Any) -> None:
+    """Forget in-memory uploads and derived views without touching local files."""
+    st.session_state["analytics_result"] = None
+    st.session_state["analytics_group_warnings"] = []
+    st.session_state["analytics_download"] = None
+    st.session_state["analytics_selected_cells"] = []
+    for key in list(st.session_state):
+        if key.startswith(("chart_", "event_", "cohort_summary_", "analytics_workspace_")):
+            del st.session_state[key]
 
 
 def apply_mapping(
@@ -63,27 +90,54 @@ def standard_bar_chart(frame: pd.DataFrame, column: str, title: str, unit: str) 
     return alt.Chart(data, title=title).mark_bar().encode(**encoding).interactive()
 
 
+def render_chart_downloads(
+    st: Any, chart: alt.Chart, data: pd.DataFrame, filename: str, key_prefix: str
+) -> None:
+    """Offer the reproducible data and specification behind an Altair preview."""
+    with st.container(horizontal=True, wrap=True):
+        st.download_button(
+            "Download chart data",
+            data.to_csv(index=False).encode("utf-8"),
+            f"{filename}_data.csv",
+            "text/csv",
+            key=f"{key_prefix}_data",
+            icon=":material/table_view:",
+            on_click="ignore",
+        )
+        st.download_button(
+            "Download chart specification",
+            chart.to_json().encode("utf-8"),
+            f"{filename}.vl.json",
+            "application/json",
+            key=f"{key_prefix}_specification",
+            icon=":material/code:",
+            on_click="ignore",
+        )
+
+
 def render_preset_views(st: Any, reports: dict[str, pd.DataFrame]) -> None:
     overview = reports.get("student_analytics")
     if overview is not None:
-        st.subheader("Core study measures")
+        st.subheader("Core study measures", icon=":material/insights:")
+        st.caption("These established plots are based on the included cells and participants selected above.")
         preset_columns = [
             ("total_working_duration", "Estimated working time", "Seconds"),
             ("total_idle_time", "Total idle time", "Seconds"),
         ]
         for column, title, unit in preset_columns:
             if column in overview.columns:
-                st.altair_chart(
-                    standard_bar_chart(overview, column, title, unit),
-                    alt=f"{title} by participant",
-                )
+                chart = standard_bar_chart(overview, column, title, unit)
+                data = overview.loc[:, ["student", column] + (["group"] if "group" in overview.columns else [])]
+                with st.container(border=True):
+                    st.altair_chart(chart, alt=f"{title} by participant")
+                    render_chart_downloads(st, chart, data, safe_filename(title), f"preset_{column}")
 
         execution = {"execution_status_success", "execution_status_error"}
         if execution.issubset(overview.columns):
             execution_data = overview.loc[:, ["student", *sorted(execution)]].melt(
                 id_vars="student", var_name="outcome", value_name="runs"
             )
-            st.altair_chart(
+            chart = (
                 alt.Chart(execution_data, title="Execution outcomes")
                 .mark_bar()
                 .encode(
@@ -92,9 +146,11 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame]) -> None:
                     color=alt.Color("outcome:N", title="Outcome"),
                     tooltip=["student:N", "outcome:N", "runs:Q"],
                 )
-                .interactive(),
-                alt="Successful and failed cell runs by participant",
+                .interactive()
             )
+            with st.container(border=True):
+                st.altair_chart(chart, alt="Successful and failed cell runs by participant")
+                render_chart_downloads(st, chart, execution_data, "execution_outcomes", "preset_executions")
 
     clipboard = reports.get("clipboard_events")
     if clipboard is not None and {"student", "event", "character_length"}.issubset(clipboard.columns):
@@ -102,8 +158,8 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame]) -> None:
         data["character_length"] = pd.to_numeric(data["character_length"], errors="coerce")
         data = data.dropna(subset=["character_length"])
         if not data.empty:
-            st.subheader("Clipboard length distribution")
-            st.altair_chart(
+            st.subheader("Clipboard length distribution", icon=":material/content_paste:")
+            chart = (
                 alt.Chart(data, title="Copy, cut, and paste lengths")
                 .mark_boxplot(size=24)
                 .encode(
@@ -112,9 +168,11 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame]) -> None:
                     color=alt.Color("event:N", legend=None),
                     row=alt.Row("student:N", title="Participant"),
                     tooltip=["student:N", "event:N", "character_length:Q"],
-                ),
-                alt="Clipboard event lengths by participant and event type",
+                )
             )
+            with st.container(border=True):
+                st.altair_chart(chart, alt="Clipboard event lengths by participant and event type")
+                render_chart_downloads(st, chart, data, "clipboard_length_distribution", "preset_clipboard")
         else:
             st.info("Clipboard events are available, but none contain a usable character length.")
 
@@ -127,14 +185,143 @@ def render_event_tables(st: Any, reports: dict[str, pd.DataFrame]) -> None:
     ]
     if not available:
         return
-    st.subheader("Event reports")
+    st.subheader("Event reports", icon=":material/table_chart:")
+    st.caption("Search, select visible columns, and download exactly the event rows currently displayed.")
     selected = st.selectbox("Report", available, key="event_report")
-    st.dataframe(reports[selected], hide_index=True, alt=f"{selected.replace('_', ' ')} report")
+    report = reports[selected]
+    search = st.text_input(
+        "Search rows", key=f"event_search_{selected}", placeholder="Type a participant, cell label, or event"
+    )
+    visible_columns = st.multiselect(
+        "Visible columns", list(report.columns), default=list(report.columns), key=f"event_visible_columns_{selected}"
+    )
+    visible = report.loc[:, visible_columns] if visible_columns else pd.DataFrame(index=report.index)
+    visible = search_rows(visible, search)
+    st.caption(f"Showing {len(visible):,} of {len(report):,} rows.")
+    st.dataframe(visible, hide_index=True, alt=f"Filtered {selected.replace('_', ' ')} report")
+    st.download_button(
+        "Download displayed table",
+        visible.to_csv(index=False).encode("utf-8"),
+        f"{selected}_displayed_rows.csv",
+        "text/csv",
+        key=f"download_event_table_{selected}",
+        icon=":material/download:",
+        on_click="ignore",
+    )
+
+
+def render_data_quality(st: Any, reports: dict[str, pd.DataFrame]) -> None:
+    """Render integrity feedback without changing any uploaded or derived data."""
+    st.subheader("Data-quality check", icon=":material/fact_check:")
+    findings = data_quality_findings(reports)
+    if findings.empty:
+        st.success("No structural data-quality issues were detected in the loaded reports.")
+        st.caption("This confirms report structure only; it does not validate research interpretation.")
+        return
+    for finding in findings.itertuples(index=False):
+        message = f"**{finding.dataset}:** {finding.message}"
+        if finding.severity == "warning":
+            st.warning(message)
+        else:
+            st.info(message)
+    st.dataframe(findings, hide_index=True, alt="Data-quality findings")
+
+
+def render_cohort_summary(st: Any, overview: pd.DataFrame | None) -> None:
+    if overview is None or overview.empty:
+        return
+    measures = numeric_columns(overview)
+    if not measures:
+        return
+    st.subheader("Cohort summary", icon=":material/groups:")
+    default = "total_working_duration" if "total_working_duration" in measures else measures[0]
+    measure = select_with_default(
+        st,
+        "Measure for cohort summary",
+        measures,
+        default,
+        "cohort_summary_measure",
+        format_func=lambda item: item.replace("_", " ").title(),
+    )
+    try:
+        summary = grouped_summary(overview, measure, "group" if "group" in overview.columns else None)
+    except DashboardInputError as error:
+        st.info(str(error))
+        return
+    st.dataframe(summary, hide_index=True, alt=f"Cohort summary for {measure}")
+    st.download_button(
+        "Download cohort summary",
+        summary.to_csv(index=False).encode("utf-8"),
+        f"{measure}_cohort_summary.csv",
+        "text/csv",
+        key="download_cohort_summary",
+        icon=":material/download:",
+        on_click="ignore",
+    )
+
+
+def render_downloads(st: Any, result: ProcessingResult) -> None:
+    st.subheader("Take your results with you", icon=":material/download:")
+    st.caption("The full package contains generated reports, plots, and a manifest, but never your raw uploads.")
+    st.download_button(
+        "Download analytics package",
+        data=st.session_state["analytics_download"],
+        file_name="notebook_analytics_results.zip",
+        mime="application/zip",
+        icon=":material/folder_zip:",
+        type="primary",
+        on_click="ignore",
+    )
+    if not result.plots:
+        return
+    st.subheader("Generated standard plots", icon=":material/image:")
+    st.caption("Download individual established plots when you do not need the full result package.")
+    for name, content in sorted(result.plots.items()):
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.code(name, language=None)
+            st.download_button(
+                "Download PNG",
+                content,
+                name,
+                "image/png",
+                key=f"download_standard_plot_{name}",
+                icon=":material/image:",
+                on_click="ignore",
+            )
+
+
+def reset_chart_controls(st: Any) -> None:
+    """Allow a new chart type or dataset to receive appropriate defaults."""
+    for key in ("chart_x", "chart_y", "chart_group", "chart_aggregation"):
+        st.session_state.pop(key, None)
+
+
+def select_with_default(
+    st: Any, label: str, options: list[str], default: str, key: str, **kwargs: Any
+) -> str:
+    """Render a selectbox with a safe, data-aware initial choice."""
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = default if default in options else options[0]
+    return st.selectbox(label, options, key=key, **kwargs)
+
+
+def safe_filename(value: str) -> str:
+    """Return a readable, filesystem-safe stem for a chart download."""
+    clean = "".join(character.lower() if character.isalnum() else " " for character in value)
+    return "_".join(clean.split()) or "custom_chart"
 
 
 def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame]) -> None:
-    st.header("Build a custom chart")
-    dataset_name = st.selectbox("Dataset", sorted(reports), key="chart_dataset")
+    st.header("Build a custom chart", icon=":material/bar_chart:")
+    st.caption(
+        "Choose a chart type to see a useful preview from your data. Every setting updates the preview immediately; "
+        "download the finished chart, its data, or its Vega-Lite specification below."
+    )
+    if st.session_state.get("chart_dataset") not in reports:
+        st.session_state["chart_dataset"] = sorted(reports)[0]
+    dataset_name = st.selectbox(
+        "Dataset", sorted(reports), key="chart_dataset", on_change=reset_chart_controls, args=(st,)
+    )
     source = reports[dataset_name]
     if source.empty:
         st.info("This dataset has no rows to chart.")
@@ -142,7 +329,7 @@ def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame]) -> None:
 
     groups = sorted(source["group"].dropna().astype(str).unique()) if "group" in source.columns else []
     students = sorted(source["student"].dropna().astype(str).unique()) if "student" in source.columns else []
-    with st.expander("Filters", expanded=False):
+    with st.expander("Filters", expanded=False, icon=":material/filter_list:"):
         chosen_groups = st.multiselect("Groups", groups, default=groups, disabled=not groups)
         chosen_students = st.multiselect("Participants", students, default=students, disabled=not students)
     data = filtered_frame(source, chosen_groups, chosen_students)
@@ -152,74 +339,129 @@ def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame]) -> None:
 
     numeric = numeric_columns(data)
     labels = list(data.columns)
-    chart_type = st.selectbox(
-        "Chart type", ["Bar", "Grouped bar", "Scatter", "Histogram", "Box plot", "Line"], key="chart_type"
-    )
-    x_default = "student" if "student" in labels else labels[0]
-    x = st.selectbox("X-axis", labels, index=labels.index(x_default), key="chart_x")
-    y_options = ["Count rows", *numeric]
-    y_choice = st.selectbox("Value", y_options, key="chart_y")
-    group_options = ["None", *categorical_columns(data)]
-    default_group = "group" if chart_type == "Grouped bar" and "group" in group_options else "None"
-    group = st.selectbox(
-        "Colour/group", group_options, index=group_options.index(default_group), key="chart_group"
-    )
-    aggregation_options = ["Count", "Sum", "Mean", "Median"] if y_choice != "Count rows" else ["Count"]
-    aggregation = st.selectbox("Aggregation", aggregation_options, key="chart_aggregation")
+    if not numeric:
+        st.warning("This dataset has no numeric columns, so it cannot produce a chart yet.")
+        return
+    if st.session_state.get("chart_type") not in CHART_TYPES:
+        st.session_state["chart_type"] = "Bar"
+    chart_type = st.segmented_control(
+        "Chart type",
+        CHART_TYPES,
+        key="chart_type",
+        required=True,
+        width="stretch",
+        wrap=True,
+        on_change=reset_chart_controls,
+        args=(st,),
+    ) or "Bar"
+    if chart_type == "Scatter" and len(numeric) < 2:
+        st.warning("Scatter plots need two numeric columns. Choose a different chart type or dataset.")
+        return
+    defaults = chart_defaults(data, chart_type)
 
-    y = None if y_choice == "Count rows" else y_choice
-    if chart_type in {"Scatter", "Histogram", "Box plot"}:
-        aggregation = "None"
+    with st.container(border=True):
+        st.caption(f":material/info: {CHART_GUIDANCE[chart_type]}")
+        x_options = numeric if chart_type == "Scatter" else labels
+        x = select_with_default(st, "X-axis", x_options, str(defaults["x"]), "chart_x")
+        requires_numeric_value = chart_type in {"Scatter", "Histogram", "Box plot"}
+        y_options = numeric if requires_numeric_value else ["Count rows", *numeric]
+        y_default = defaults["y"] if defaults["y"] in y_options else y_options[0]
+        y_choice = select_with_default(st, "Value", y_options, str(y_default), "chart_y")
+        y = None if y_choice == "Count rows" else y_choice
+        group_options = ["None", *[column for column in categorical_columns(data) if column != x]]
+        group_default = defaults["group"] if defaults["group"] in group_options else "None"
+        group_choice = select_with_default(st, "Colour/group", group_options, str(group_default), "chart_group")
+        group = None if group_choice == "None" else group_choice
+        if chart_type in {"Scatter", "Histogram", "Box plot"}:
+            aggregation = "None"
+            st.caption("This chart uses individual rows, so no aggregation is applied.")
+        else:
+            aggregation_options = ["Count", "Sum", "Mean", "Median"] if y is not None else ["Count"]
+            aggregation = select_with_default(
+                st, "Aggregation", aggregation_options, str(defaults["aggregation"]), "chart_aggregation"
+            )
+
+        with st.expander(
+            "Advanced chart settings",
+            expanded=False,
+            icon=":material/tune:",
+            type="compact",
+        ):
+            st.caption("Optional presentation settings. Leave these at their defaults for a quick chart.")
+            default_title = f"{y_choice if y is not None else 'Count'} by {x}"
+            title = st.text_input("Chart title", value=default_title, key="chart_title")
+            caption = st.text_input(
+                "Caption", value="", key="chart_caption", placeholder="Optional note shown below the chart"
+            )
+            x_label = st.text_input("X-axis label", value=x.replace("_", " ").title(), key="chart_x_label")
+            default_y_label = "Rows" if chart_type == "Histogram" else (y_choice if y is not None else "Count rows")
+            y_label = st.text_input("Y-axis label", value=default_y_label.replace("_", " ").title(), key="chart_y_label")
+            colour = st.color_picker("Single-series colour", "#1F77B4", key="chart_colour")
+            palette = "tableau10"
+            if group:
+                palette = st.selectbox(
+                    "Grouped colour palette", ["tableau10", "set2", "category10"], key="chart_palette",
+                    help="Used when a grouping field is selected; the single-series colour is used otherwise.",
+                )
+
     try:
-        plotted = aggregate_for_chart(data, x, y, None if group == "None" else group, aggregation)
+        plotted = aggregate_for_chart(data, x, y, group, aggregation)
     except DashboardInputError as error:
         st.warning(str(error))
         return
     value_column = "count" if y is None or aggregation == "Count" else y
-    color = None if group == "None" or group == x else alt.Color(f"{group}:N", title=group)
-    color_encoding = {"color": color} if color is not None else {}
-    title = f"{value_column} by {x}"
+    color_encoding: dict[str, Any]
+    if group and group != x:
+        color_encoding = {"color": alt.Color(f"{group}:N", title=group, scale=alt.Scale(scheme=palette))}
+    else:
+        color_encoding = {"color": alt.value(colour)}
 
     if chart_type in {"Bar", "Grouped bar"}:
         chart = alt.Chart(plotted, title=title).mark_bar().encode(
-            x=alt.X(f"{x}:N", title=x), y=alt.Y(f"{value_column}:Q", title=value_column),
-            tooltip=list(plotted.columns),
-            **color_encoding,
+            x=alt.X(f"{x}:N", title=x_label), y=alt.Y(f"{value_column}:Q", title=y_label),
+            tooltip=list(plotted.columns), **color_encoding,
         )
-    elif chart_type == "Scatter":
-        if y is None:
-            st.warning("Scatter plots need a numeric value column.")
-            return
+    elif chart_type == "Scatter" and y is not None:
         chart = alt.Chart(plotted, title=title).mark_circle(size=70).encode(
-            x=alt.X(f"{x}:Q" if x in numeric else f"{x}:N", title=x),
-            y=alt.Y(f"{y}:Q", title=y), tooltip=list(plotted.columns), **color_encoding,
+            x=alt.X(f"{x}:Q", title=x_label), y=alt.Y(f"{y}:Q", title=y_label),
+            tooltip=list(plotted.columns), **color_encoding,
         )
-    elif chart_type == "Histogram":
-        if y is None:
-            st.warning("Histograms need a numeric value column.")
-            return
+    elif chart_type == "Histogram" and y is not None:
         chart = alt.Chart(plotted, title=title).mark_bar().encode(
-            x=alt.X(f"{y}:Q", bin=True, title=y), y=alt.Y("count():Q", title="Rows"),
-            **color_encoding,
+            x=alt.X(f"{y}:Q", bin=True, title=x_label), y=alt.Y("count():Q", title=y_label), **color_encoding,
         )
-    elif chart_type == "Box plot":
-        if y is None:
-            st.warning("Box plots need a numeric value column.")
-            return
+    elif chart_type == "Box plot" and y is not None:
         chart = alt.Chart(plotted, title=title).mark_boxplot().encode(
-            x=alt.X(f"{y}:Q", title=y), y=alt.Y(f"{x}:N", title=x),
-            tooltip=list(plotted.columns),
-            **color_encoding,
+            x=alt.X(f"{y}:Q", title=x_label), y=alt.Y(f"{x}:N", title=y_label),
+            tooltip=list(plotted.columns), **color_encoding,
         )
     else:
         date_columns = timestamp_columns(plotted)
         x_type = "T" if x in date_columns else "N"
         chart = alt.Chart(plotted, title=title).mark_line(point=True).encode(
-            x=alt.X(f"{x}:{x_type}", title=x), y=alt.Y(f"{value_column}:Q", title=value_column),
+            x=alt.X(f"{x}:{x_type}", title=x_label), y=alt.Y(f"{value_column}:Q", title=y_label),
             tooltip=list(plotted.columns), **color_encoding,
         )
-    st.altair_chart(chart.interactive(), alt=f"Custom {chart_type.lower()} chart: {title}")
-    st.dataframe(plotted, hide_index=True, alt="Data currently shown in the custom chart")
+
+    with st.container(border=True):
+        st.subheader("Preview", icon=":material/visibility:")
+        st.altair_chart(chart.interactive(), alt=f"Custom {chart_type.lower()} chart: {title}")
+        if caption:
+            st.caption(caption)
+        st.dataframe(plotted, hide_index=True, alt="Data currently shown in the custom chart")
+        filename = safe_filename(title)
+        try:
+            png = chart_png(
+                plotted, chart_type, x, value_column, group, title, x_label, y_label, colour, palette
+            )
+        except Exception as error:
+            st.warning(f"The interactive preview is available, but its PNG could not be created: {error}")
+            png = None
+        with st.container(horizontal=True, wrap=True):
+            if png is not None:
+                st.download_button("Download PNG", png, f"{filename}.png", "image/png", icon=":material/image:", on_click="ignore")
+            st.download_button("Download chart data", plotted.to_csv(index=False).encode("utf-8"), f"{filename}_data.csv", "text/csv", icon=":material/table_view:", on_click="ignore")
+            st.download_button("Download chart specification", chart.to_json().encode("utf-8"), f"{filename}.vl.json", "application/json", icon=":material/code:", on_click="ignore")
 
 
 def render_cell_selection(st: Any, original_reports: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -261,8 +503,17 @@ def main() -> None:
 
     st.set_page_config(page_title="Notebook analytics workspace", page_icon=":material/analytics:", layout="wide")
     initialise_state(st)
-    st.title("Notebook analytics workspace")
-    st.caption("Process local study logs and explore results without running analysis commands.")
+    st.title("Notebook analytics workspace", icon=":material/analytics:")
+    st.caption("Process local study logs, check their quality, and explore results without running analysis commands.")
+
+    with st.expander("How to use this workspace", expanded=False, icon=":material/help:"):
+        st.markdown(
+            "1. Upload **one raw-log ZIP** or one or more analytics CSV files.  \n"
+            "2. Optionally add a `participant_id,group` mapping to compare conditions.  \n"
+            "3. Review the data-quality check before interpreting results.  \n"
+            "4. Use preset views for established measures or the custom chart builder for other compatible fields."
+        )
+        st.caption("Uploads are processed only in this browser session and are discarded when the session ends.")
 
     with st.form("upload_data", border=True):
         uploads = st.file_uploader(
@@ -312,8 +563,12 @@ def main() -> None:
 
     result: ProcessingResult | None = st.session_state["analytics_result"]
     if result is None:
-        st.info("Your uploads are processed locally in this browser session and discarded when the session ends.")
+        st.info("Upload data above, then select Generate analytics once. No analysis runs while you are choosing files.")
         return
+
+    if st.button("Start a new analysis", icon=":material/restart_alt:", help="Clears this browser session only."):
+        clear_analysis_session(st)
+        st.rerun()
 
     for warning in [*result.warnings, *st.session_state["analytics_group_warnings"]]:
         st.warning(warning)
@@ -322,33 +577,52 @@ def main() -> None:
     overview = reports.get("student_analytics")
     with st.container(horizontal=True):
         st.metric("Reports", len(reports), border=True)
-        st.metric("Participants", overview["student"].nunique() if overview is not None and "student" in overview else "Not available", border=True)
+        st.metric(
+            "Participants",
+            overview["student"].nunique() if overview is not None and "student" in overview else "Not available",
+            border=True,
+        )
         st.metric("Generated plots", len(result.plots), border=True)
 
-    tabs = st.tabs(["Overview", "Preset views", "Event reports", "Custom chart", "Download"])
-    with tabs[0]:
-        st.subheader("Loaded datasets")
+    view = st.segmented_control(
+        "Workspace view",
+        ["Overview", "Data quality", "Preset views", "Event reports", "Custom chart", "Download"],
+        default="Overview",
+        required=True,
+        key="analytics_workspace_view",
+        width="stretch",
+        wrap=True,
+    )
+    if view == "Overview":
+        st.subheader("Loaded datasets", icon=":material/dataset:")
         summary = pd.DataFrame(
             [{"dataset": name, "rows": len(frame), "columns": len(frame.columns)} for name, frame in reports.items()]
         )
         st.dataframe(summary, hide_index=True, alt="Loaded analytics datasets")
         if overview is not None:
-            st.dataframe(overview, hide_index=True, alt="Overall participant analytics")
-    with tabs[1]:
+            with st.container(border=True):
+                st.subheader("Overall participant analytics")
+                st.dataframe(overview, hide_index=True, alt="Overall participant analytics")
+                st.download_button(
+                    "Download overall analytics",
+                    overview.to_csv(index=False).encode("utf-8"),
+                    "student_analytics_displayed.csv",
+                    "text/csv",
+                    icon=":material/download:",
+                    key="download_overview",
+                    on_click="ignore",
+                )
+            render_cohort_summary(st, overview)
+    elif view == "Data quality":
+        render_data_quality(st, reports)
+    elif view == "Preset views":
         render_preset_views(st, reports)
-    with tabs[2]:
+    elif view == "Event reports":
         render_event_tables(st, reports)
-    with tabs[3]:
+    elif view == "Custom chart":
         render_chart_builder(st, reports)
-    with tabs[4]:
-        st.download_button(
-            "Download analytics package",
-            data=st.session_state["analytics_download"],
-            file_name="notebook_analytics_results.zip",
-            mime="application/zip",
-            icon=":material/download:",
-        )
-        st.caption("The download contains generated reports, plots, and a manifest. It does not include uploaded raw logs.")
+    elif view == "Download":
+        render_downloads(st, result)
 
 
 if __name__ == "__main__":

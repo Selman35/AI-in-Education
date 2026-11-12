@@ -293,6 +293,106 @@ def filtered_frame(
     return result
 
 
+def search_rows(frame: pd.DataFrame, query: str) -> pd.DataFrame:
+    """Return rows containing a case-insensitive query in any visible field."""
+    query = query.strip()
+    if not query:
+        return frame.copy()
+    matches = frame.astype("string").apply(
+        lambda column: column.str.contains(query, case=False, na=False, regex=False)
+    )
+    return frame.loc[matches.any(axis=1)].copy()
+
+
+def data_quality_findings(reports: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    """Describe structural issues that could make a dashboard misleading.
+
+    This deliberately checks data integrity rather than judging student
+    behaviour.  It is equally applicable to reports generated from raw logs
+    and researcher-uploaded CSV files.
+    """
+    findings: list[dict[str, str]] = []
+    known_reports = set(reports) & set(REPORT_FILENAMES)
+    if "student_analytics" not in reports and known_reports:
+        findings.append(
+            {
+                "severity": "warning",
+                "dataset": "student_analytics",
+                "message": "The overall participant report is missing; working-time and idle-time views are unavailable.",
+            }
+        )
+    for name, frame in reports.items():
+        if frame.empty:
+            findings.append(
+                {
+                    "severity": "info",
+                    "dataset": name,
+                    "message": "This report has no rows. The matching event type may not have occurred.",
+                }
+            )
+        if "student" in frame.columns:
+            student = frame["student"].astype("string").str.strip()
+            if student.isna().any() or (student == "").any():
+                findings.append(
+                    {
+                        "severity": "warning",
+                        "dataset": name,
+                        "message": "One or more rows have no participant label.",
+                    }
+                )
+    overview = reports.get("student_analytics")
+    if overview is not None and "student" in overview.columns:
+        duplicates = overview["student"].astype("string").duplicated(keep=False)
+        if duplicates.any():
+            findings.append(
+                {
+                    "severity": "warning",
+                    "dataset": "student_analytics",
+                    "message": "The overall report has duplicate participant rows; totals may be duplicated.",
+                }
+            )
+    for name, frame in reports.items():
+        for column in numeric_columns(frame):
+            values = pd.to_numeric(frame[column], errors="coerce")
+            if (values < 0).any():
+                findings.append(
+                    {
+                        "severity": "warning",
+                        "dataset": name,
+                        "message": f"{column} contains negative values. Check the source report before interpreting it.",
+                    }
+                )
+    return pd.DataFrame(findings, columns=["severity", "dataset", "message"])
+
+
+def grouped_summary(frame: pd.DataFrame, value: str, group: str | None = None) -> pd.DataFrame:
+    """Build a compact numeric cohort summary for a selected dashboard measure."""
+    if value not in frame.columns:
+        raise DashboardInputError(f"Summary value column is not available: {value}")
+    data = pd.DataFrame({"value": pd.to_numeric(frame[value], errors="coerce")}).dropna()
+    if data.empty:
+        raise DashboardInputError(f"{value} contains no numeric values to summarise.")
+    if group and group in frame.columns:
+        data[group] = frame.loc[data.index, group].fillna("Unmapped").astype(str)
+        return (
+            data.groupby(group, dropna=False)["value"]
+            .agg(participants="count", mean="mean", median="median", minimum="min", maximum="max", standard_deviation="std")
+            .reset_index()
+        )
+    return pd.DataFrame(
+        [
+            {
+                "participants": data["value"].count(),
+                "mean": data["value"].mean(),
+                "median": data["value"].median(),
+                "minimum": data["value"].min(),
+                "maximum": data["value"].max(),
+                "standard_deviation": data["value"].std(),
+            }
+        ]
+    )
+
+
 def cell_label_from_metric_column(column: object) -> str | None:
     """Return a stable cell label from a flattened cell-level metric column."""
     name = str(column)
@@ -389,6 +489,124 @@ def aggregate_for_chart(
     if aggregation == "Count":
         return data.groupby(columns, dropna=False).size().reset_index(name="count")
     return data.groupby(columns, dropna=False)[y].agg(aggregations[aggregation]).reset_index()
+
+
+def chart_defaults(frame: pd.DataFrame, chart_type: str) -> dict[str, str | None]:
+    """Choose a usable starting configuration from the currently loaded data.
+
+    The dashboard still lets researchers choose every field themselves.  These
+    defaults only make the first preview useful instead of showing an empty
+    chart or requiring several selections before anything appears.
+    """
+    columns = [str(column) for column in frame.columns]
+    numeric = numeric_columns(frame)
+    categorical = categorical_columns(frame)
+    timestamps = timestamp_columns(frame)
+    category = "student" if "student" in columns else (categorical[0] if categorical else columns[0])
+    numeric_value = numeric[0] if numeric else None
+    group = "group" if "group" in categorical and chart_type == "Grouped bar" else None
+
+    if chart_type == "Scatter" and len(numeric) >= 2:
+        return {"x": numeric[0], "y": numeric[1], "group": None, "aggregation": "None"}
+    if chart_type == "Histogram":
+        return {"x": category, "y": numeric_value, "group": group, "aggregation": "None"}
+    if chart_type == "Box plot":
+        return {"x": category, "y": numeric_value, "group": group, "aggregation": "None"}
+    if chart_type == "Line":
+        return {
+            "x": timestamps[0] if timestamps else category,
+            "y": numeric_value,
+            "group": group,
+            "aggregation": "Mean" if numeric_value else "Count",
+        }
+    return {
+        "x": category,
+        "y": numeric_value,
+        "group": group,
+        "aggregation": "Sum" if numeric_value else "Count",
+    }
+
+
+def chart_png(
+    frame: pd.DataFrame,
+    chart_type: str,
+    x: str,
+    value: str,
+    group: str | None,
+    title: str,
+    x_label: str,
+    y_label: str,
+    colour: str,
+    palette: str = "tableau10",
+) -> bytes:
+    """Create a portable PNG export for the table currently shown in the chart.
+
+    Altair is retained for the interactive website preview.  Matplotlib creates
+    a self-contained PNG so a downloaded chart can be used in a report without
+    an Altair renderer or an internet connection.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots(figsize=(9, 5))
+    groups = [None] if not group or group not in frame.columns else list(frame[group].dropna().unique())
+    palette_name = {"tableau10": "tab10", "category10": "tab10", "set2": "Set2"}.get(palette, "tab10")
+    colour_map = plt.get_cmap(palette_name)
+    group_colours = [colour_map(index / max(1, len(groups) - 1)) for index in range(len(groups))]
+
+    if chart_type in {"Bar", "Grouped bar"}:
+        categories = list(frame[x].astype(str).drop_duplicates())
+        if len(groups) == 1:
+            values = frame.set_index(frame[x].astype(str))[value].reindex(categories).fillna(0)
+            axis.bar(categories, values, color=colour)
+        else:
+            width = 0.8 / len(groups)
+            positions = list(range(len(categories)))
+            for index, group_value in enumerate(groups):
+                subset = frame[frame[group] == group_value].copy()
+                values = subset.set_index(subset[x].astype(str))[value].reindex(categories).fillna(0)
+                offsets = [position - 0.4 + width / 2 + index * width for position in positions]
+                axis.bar(offsets, values, width=width, label=str(group_value), color=group_colours[index])
+            axis.set_xticks(positions, categories)
+            axis.legend(title=group)
+    elif chart_type == "Scatter":
+        for index, group_value in enumerate(groups):
+            subset = frame if group_value is None else frame[frame[group] == group_value]
+            axis.scatter(
+                subset[x], subset[value], label=None if group_value is None else str(group_value),
+                color=colour if group_value is None else group_colours[index],
+            )
+        if len(groups) > 1:
+            axis.legend(title=group)
+    elif chart_type == "Histogram":
+        axis.hist(pd.to_numeric(frame[value], errors="coerce").dropna(), color=colour, edgecolor="white")
+    elif chart_type == "Box plot":
+        box_data = [
+            pd.to_numeric(frame.loc[frame[x].astype(str) == category, value], errors="coerce").dropna()
+            for category in frame[x].astype(str).drop_duplicates()
+        ]
+        axis.boxplot(box_data, tick_labels=list(frame[x].astype(str).drop_duplicates()))
+    else:
+        for index, group_value in enumerate(groups):
+            subset = frame if group_value is None else frame[frame[group] == group_value]
+            axis.plot(
+                subset[x], subset[value], marker="o", label=None if group_value is None else str(group_value),
+                color=colour if group_value is None else group_colours[index],
+            )
+        if len(groups) > 1:
+            axis.legend(title=group)
+
+    axis.set_title(title)
+    axis.set_xlabel(x_label)
+    axis.set_ylabel(y_label)
+    axis.tick_params(axis="x", rotation=30)
+    figure.tight_layout()
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png", dpi=160)
+    plt.close(figure)
+    return buffer.getvalue()
 
 
 def run_raw_log_analytics(archive_bytes: bytes, workspace: Path) -> ProcessingResult:
