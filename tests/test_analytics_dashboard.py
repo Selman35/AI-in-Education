@@ -20,6 +20,7 @@ from tools.analytics_dashboard.analytics_workspace import (
     build_download_zip,
     chart_defaults,
     chart_png,
+    convert_time_unit,
     data_quality_findings,
     extract_log_archive,
     filter_reports_to_cells,
@@ -123,6 +124,27 @@ class AnalyticsWorkspaceTests(unittest.TestCase):
         self.assertEqual(visible["student"].tolist(), ["bbb101__pilot"])
         summary = grouped_summary(reports["student_analytics"], "total_working_duration", "group")
         self.assertEqual(set(summary["group"]), {"ai", "non_ai"})
+
+    def test_time_unit_conversion_is_display_only(self) -> None:
+        reports = {
+            "student_analytics": pd.DataFrame(
+                {
+                    "student": ["aaa101__pilot"],
+                    "total_working_duration": [120.0],
+                    "task_1_code_idle_time": [30.0],
+                    "execution_status_success": [2],
+                }
+            ),
+            "active_sessions": pd.DataFrame(
+                {"duration_seconds": [180.0], "start_time": ["2026-01-01T10:00:00Z"]}
+            ),
+        }
+        minutes = convert_time_unit(reports, "Minutes")
+        self.assertEqual(minutes["student_analytics"].loc[0, "total_working_duration"], 2.0)
+        self.assertEqual(minutes["student_analytics"].loc[0, "task_1_code_idle_time"], 0.5)
+        self.assertEqual(minutes["active_sessions"].loc[0, "duration_seconds"], 3.0)
+        self.assertEqual(minutes["student_analytics"].loc[0, "execution_status_success"], 2)
+        self.assertEqual(reports["student_analytics"].loc[0, "total_working_duration"], 120.0)
 
     def test_filter_reports_to_cells_hides_only_cell_level_data(self) -> None:
         reports = {

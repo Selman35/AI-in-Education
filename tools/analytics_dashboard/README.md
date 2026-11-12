@@ -55,6 +55,11 @@ The workspace provides a guided workflow with these views:
   a download for the currently displayed rows.
 - **Custom chart:** a flexible chart builder for any compatible report columns.
 
+Use the **Display time in** control to switch duration-style measures between
+seconds and minutes. This changes values shown in dashboard tables, summaries,
+and charts only; the downloaded analytics package keeps the original seconds
+values.
+
 The custom chart builder
 starts with a useful chart based on the selected data and updates the preview
 as settings change. It explains what each chart type needs and lets you choose

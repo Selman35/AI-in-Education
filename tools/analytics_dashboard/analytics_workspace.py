@@ -279,6 +279,49 @@ def timestamp_columns(frame: pd.DataFrame) -> list[str]:
     return candidates
 
 
+def is_time_measure(column: object) -> bool:
+    """Return whether a numeric analytics field represents an elapsed duration.
+
+    Timestamp fields are intentionally excluded: changing a timestamp from
+    seconds to minutes would be meaningless.  This only identifies the
+    duration-style fields produced by the existing analytics reports.
+    """
+    name = str(column).lower()
+    if any(token in name for token in ("timestamp", "start_time", "end_time", "datetime", "date")):
+        return False
+    return (
+        name.endswith("_seconds")
+        or "duration" in name
+        or "idle_time" in name
+        or "working_time" in name
+        or "active_session" in name
+    )
+
+
+def convert_time_unit(
+    reports: Mapping[str, pd.DataFrame], unit: str
+) -> dict[str, pd.DataFrame]:
+    """Return display-only report copies in seconds or minutes.
+
+    The input reports are never mutated, so raw-log interpretation and the
+    downloadable analytics package retain their canonical seconds values.
+    """
+    if unit not in {"Seconds", "Minutes"}:
+        raise DashboardInputError("Time display unit must be Seconds or Minutes.")
+    factor = 60 if unit == "Minutes" else 1
+    converted: dict[str, pd.DataFrame] = {}
+    for name, report in reports.items():
+        frame = report.copy()
+        if factor != 1:
+            for column in frame.columns:
+                if is_time_measure(column):
+                    values = pd.to_numeric(frame[column], errors="coerce")
+                    if values.notna().any():
+                        frame[column] = values / factor
+        converted[name] = frame
+    return converted
+
+
 def filtered_frame(
     frame: pd.DataFrame, groups: Iterable[str] | None = None, students: Iterable[str] | None = None
 ) -> pd.DataFrame:

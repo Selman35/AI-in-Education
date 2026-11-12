@@ -23,10 +23,12 @@ from analytics_workspace import (
     categorical_columns,
     chart_defaults,
     chart_png,
+    convert_time_unit,
     data_quality_findings,
     filtered_frame,
     filter_reports_to_cells,
     grouped_summary,
+    is_time_measure,
     numeric_columns,
     result_from_csv_uploads,
     run_raw_log_analytics,
@@ -45,6 +47,12 @@ CHART_GUIDANCE = {
     "Box plot": "Compare numeric distributions across categories. It needs one category and one numeric measure.",
     "Line": "Show a value over time or another ordered category. A timestamp column gives the clearest result.",
 }
+
+
+def display_label(column: str, time_unit: str) -> str:
+    """Create a readable axis label while making converted durations explicit."""
+    label = column.replace("_", " ").title()
+    return f"{label} ({time_unit.lower()})" if is_time_measure(column) else label
 
 
 def initialise_state(st: Any) -> None:
@@ -115,14 +123,14 @@ def render_chart_downloads(
         )
 
 
-def render_preset_views(st: Any, reports: dict[str, pd.DataFrame]) -> None:
+def render_preset_views(st: Any, reports: dict[str, pd.DataFrame], time_unit: str) -> None:
     overview = reports.get("student_analytics")
     if overview is not None:
         st.subheader("Core study measures", icon=":material/insights:")
         st.caption("These established plots are based on the included cells and participants selected above.")
         preset_columns = [
-            ("total_working_duration", "Estimated working time", "Seconds"),
-            ("total_idle_time", "Total idle time", "Seconds"),
+            ("total_working_duration", "Estimated working time", time_unit),
+            ("total_idle_time", "Total idle time", time_unit),
         ]
         for column, title, unit in preset_columns:
             if column in overview.columns:
@@ -311,7 +319,7 @@ def safe_filename(value: str) -> str:
     return "_".join(clean.split()) or "custom_chart"
 
 
-def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame]) -> None:
+def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame], time_unit: str) -> None:
     st.header("Build a custom chart", icon=":material/bar_chart:")
     st.caption(
         "Choose a chart type to see a useful preview from your data. Every setting updates the preview immediately; "
@@ -393,9 +401,17 @@ def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame]) -> None:
             caption = st.text_input(
                 "Caption", value="", key="chart_caption", placeholder="Optional note shown below the chart"
             )
-            x_label = st.text_input("X-axis label", value=x.replace("_", " ").title(), key="chart_x_label")
-            default_y_label = "Rows" if chart_type == "Histogram" else (y_choice if y is not None else "Count rows")
-            y_label = st.text_input("Y-axis label", value=default_y_label.replace("_", " ").title(), key="chart_y_label")
+            if chart_type == "Histogram":
+                default_x_label = display_label(y_choice, time_unit)
+                default_y_label = "Rows"
+            elif chart_type == "Box plot":
+                default_x_label = display_label(y_choice, time_unit)
+                default_y_label = display_label(x, time_unit)
+            else:
+                default_x_label = display_label(x, time_unit)
+                default_y_label = display_label(y_choice, time_unit) if y is not None else "Count rows"
+            x_label = st.text_input("X-axis label", value=default_x_label, key="chart_x_label")
+            y_label = st.text_input("Y-axis label", value=default_y_label, key="chart_y_label")
             colour = st.color_picker("Single-series colour", "#1F77B4", key="chart_colour")
             palette = "tableau10"
             if group:
@@ -573,7 +589,20 @@ def main() -> None:
     for warning in [*result.warnings, *st.session_state["analytics_group_warnings"]]:
         st.warning(warning)
 
-    reports = render_cell_selection(st, result.reports)
+    filtered_reports = render_cell_selection(st, result.reports)
+    time_unit = st.segmented_control(
+        "Display time in",
+        ["Seconds", "Minutes"],
+        default="Seconds",
+        required=True,
+        key="analytics_time_unit",
+        width="content",
+    ) or "Seconds"
+    reports = convert_time_unit(filtered_reports, time_unit)
+    st.caption(
+        f"Time-based values in this dashboard are displayed in **{time_unit.lower()}**. "
+        "The original analytics package remains in seconds."
+    )
     overview = reports.get("student_analytics")
     with st.container(horizontal=True):
         st.metric("Reports", len(reports), border=True)
@@ -616,11 +645,11 @@ def main() -> None:
     elif view == "Data quality":
         render_data_quality(st, reports)
     elif view == "Preset views":
-        render_preset_views(st, reports)
+        render_preset_views(st, reports, time_unit)
     elif view == "Event reports":
         render_event_tables(st, reports)
     elif view == "Custom chart":
-        render_chart_builder(st, reports)
+        render_chart_builder(st, reports, time_unit)
     elif view == "Download":
         render_downloads(st, result)
 
