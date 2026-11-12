@@ -7,6 +7,7 @@ can be tested with ordinary unit tests.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -100,6 +101,25 @@ class ProcessingResult:
     plots: dict[str, bytes]
     warnings: tuple[str, ...]
     manifest: dict[str, object]
+
+
+@dataclass(frozen=True)
+class SavedChart:
+    """Immutable, session-only record of one reviewed dashboard chart."""
+
+    chart_id: str
+    title: str
+    caption: str
+    chart_type: str
+    time_unit: str
+    specification: str
+    plotted_csv: str
+    png: bytes
+
+    @property
+    def data(self) -> pd.DataFrame:
+        """Return the exact table that was visible when the chart was saved."""
+        return pd.read_csv(io.StringIO(self.plotted_csv))
 
 
 def _safe_archive_member(name: str) -> bool:
@@ -503,6 +523,61 @@ def filter_reports_to_cells(
     return filtered
 
 
+def cell_duration_summary(overview: pd.DataFrame) -> pd.DataFrame:
+    """Return total, active, and remaining observed duration for each cell.
+
+    ``working_duration`` is part of ``total_duration`` rather than a separate
+    additive measure.  The remaining duration lets stacked charts show one
+    full total bar without double-counting active work.
+    """
+    if "student" not in overview.columns:
+        return pd.DataFrame(
+            columns=[
+                "student",
+                "cell",
+                "total_duration",
+                "working_duration",
+                "remaining_observed_duration",
+            ]
+        )
+    rows: list[pd.DataFrame] = []
+    suffix = "_total_duration"
+    for total_column in overview.columns:
+        label = cell_label_from_metric_column(total_column)
+        if label is None or not str(total_column).endswith(suffix):
+            continue
+        working_column = f"{label}_working_duration"
+        if working_column not in overview.columns:
+            continue
+        duration = pd.DataFrame(
+            {
+                "student": overview["student"],
+                "cell": label,
+                "total_duration": pd.to_numeric(overview[total_column], errors="coerce").fillna(0),
+                "working_duration": pd.to_numeric(overview[working_column], errors="coerce").fillna(0),
+            }
+        )
+        duration["total_duration"] = duration["total_duration"].clip(lower=0)
+        duration["working_duration"] = duration["working_duration"].clip(
+            lower=0, upper=duration["total_duration"]
+        )
+        duration["remaining_observed_duration"] = (
+            duration["total_duration"] - duration["working_duration"]
+        )
+        rows.append(duration)
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "student",
+                "cell",
+                "total_duration",
+                "working_duration",
+                "remaining_observed_duration",
+            ]
+        )
+    return pd.concat(rows, ignore_index=True)
+
+
 def aggregate_for_chart(
     frame: pd.DataFrame,
     x: str,
@@ -649,6 +724,117 @@ def chart_png(
     buffer = io.BytesIO()
     figure.savefig(buffer, format="png", dpi=160)
     plt.close(figure)
+    return buffer.getvalue()
+
+
+def _safe_chart_stem(value: str) -> str:
+    """Return a deterministic archive-safe stem for one saved chart."""
+    stem = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    return stem or "chart"
+
+
+def render_vega_lite_png(specification: str) -> bytes:
+    """Render a Vega-Lite specification with the same renderer as the preview.
+
+    ``vl-convert-python`` is intentionally imported only when a researcher
+    saves a chart. This keeps ordinary CSV exploration available until PNG
+    export is needed and gives a direct, actionable error if the optional
+    dashboard dependency was not installed.
+    """
+    try:
+        import vl_convert as vlc
+    except ImportError as error:
+        raise DashboardInputError(
+            "Saved-chart PNG export requires vl-convert-python. Install the "
+            "analytics dashboard requirements and restart Streamlit."
+        ) from error
+    return vlc.vegalite_to_png(specification)
+
+
+def create_saved_chart(
+    *,
+    title: str,
+    caption: str,
+    chart_type: str,
+    time_unit: str,
+    specification: str,
+    plotted_data: pd.DataFrame,
+) -> SavedChart:
+    """Create an immutable snapshot that can be exported after exploration."""
+    if time_unit not in {"Seconds", "Minutes"}:
+        raise DashboardInputError("Saved chart time unit must be Seconds or Minutes.")
+    try:
+        canonical_specification = json.dumps(
+            json.loads(specification), sort_keys=True, separators=(",", ":")
+        )
+    except (TypeError, json.JSONDecodeError) as error:
+        raise DashboardInputError("The chart does not have a valid Vega-Lite specification.") from error
+
+    plotted_csv = plotted_data.to_csv(index=False)
+    fingerprint_input = "\n".join(
+        (title.strip(), caption.strip(), chart_type.strip(), time_unit, canonical_specification, plotted_csv)
+    )
+    chart_id = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()
+    return SavedChart(
+        chart_id=chart_id,
+        title=title.strip() or "Untitled chart",
+        caption=caption.strip(),
+        chart_type=chart_type.strip() or "Chart",
+        time_unit=time_unit,
+        specification=canonical_specification,
+        plotted_csv=plotted_csv,
+        png=render_vega_lite_png(canonical_specification),
+    )
+
+
+def add_saved_chart(
+    saved_charts: Iterable[SavedChart], chart: SavedChart
+) -> tuple[list[SavedChart], bool]:
+    """Append a snapshot unless the identical chart/data was already saved."""
+    collection = list(saved_charts)
+    if any(existing.chart_id == chart.chart_id for existing in collection):
+        return collection, False
+    return [*collection, chart], True
+
+
+def remove_saved_chart(saved_charts: Iterable[SavedChart], chart_id: str) -> list[SavedChart]:
+    """Return a collection without one saved chart."""
+    return [chart for chart in saved_charts if chart.chart_id != chart_id]
+
+
+def build_saved_charts_zip(charts: Iterable[SavedChart]) -> bytes:
+    """Package selected snapshots without including uploads or unselected data."""
+    selected = list(charts)
+    if not selected:
+        raise DashboardInputError("Select at least one saved chart before downloading.")
+
+    manifest_charts: list[dict[str, object]] = []
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for index, chart in enumerate(selected, start=1):
+            stem = f"{index:02d}_{_safe_chart_stem(chart.title)}"
+            files = {
+                "png": f"charts/{stem}.png",
+                "data": f"charts/{stem}.csv",
+                "specification": f"charts/{stem}.vl.json",
+            }
+            archive.writestr(files["png"], chart.png)
+            archive.writestr(files["data"], chart.plotted_csv)
+            archive.writestr(files["specification"], chart.specification)
+            manifest_charts.append(
+                {
+                    "chart_id": chart.chart_id,
+                    "title": chart.title,
+                    "caption": chart.caption,
+                    "chart_type": chart.chart_type,
+                    "display_time_unit": chart.time_unit,
+                    "files": files,
+                }
+            )
+        archive.writestr(
+            "manifest.json",
+            json.dumps({"saved_charts": manifest_charts}, indent=2, sort_keys=True),
+        )
     return buffer.getvalue()
 
 

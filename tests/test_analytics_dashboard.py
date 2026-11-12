@@ -8,18 +8,24 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
 from tools.analytics_dashboard.analytics_workspace import (
     DashboardInputError,
     ProcessingResult,
+    SavedChart,
+    add_saved_chart,
     aggregate_for_chart,
     apply_group_mapping,
     available_cell_labels,
     build_download_zip,
+    build_saved_charts_zip,
     chart_defaults,
     chart_png,
+    cell_duration_summary,
+    create_saved_chart,
     convert_time_unit,
     data_quality_findings,
     extract_log_archive,
@@ -27,6 +33,7 @@ from tools.analytics_dashboard.analytics_workspace import (
     grouped_summary,
     participant_id_from_student,
     read_csv_uploads,
+    remove_saved_chart,
     run_raw_log_analytics,
     search_rows,
     validate_group_mapping,
@@ -171,6 +178,21 @@ class AnalyticsWorkspaceTests(unittest.TestCase):
         self.assertEqual(filtered["cell_execution_summary"]["cell"].tolist(), ["task_1_code"])
         self.assertEqual(filtered["cell_mapping"]["cell_label"].tolist(), ["task_1_code"])
 
+    def test_cell_duration_summary_keeps_working_time_inside_total_duration(self) -> None:
+        overview = pd.DataFrame(
+            {
+                "student": ["aaa101"],
+                "task_1_code_total_duration": [120],
+                "task_1_code_working_duration": [90],
+                "task_2_code_total_duration": [20],
+                "task_2_code_working_duration": [30],
+            }
+        )
+        summary = cell_duration_summary(overview)
+        self.assertEqual(summary["cell"].tolist(), ["task_1_code", "task_2_code"])
+        self.assertEqual(summary["remaining_observed_duration"].tolist(), [30, 0])
+        self.assertEqual(summary["working_duration"].tolist(), [90, 20])
+
     def test_download_zip_excludes_raw_uploads(self) -> None:
         result = ProcessingResult(
             reports={"student_analytics": pd.DataFrame({"student": ["aaa101"], "value": [1]})},
@@ -183,6 +205,72 @@ class AnalyticsWorkspaceTests(unittest.TestCase):
                 sorted(archive.namelist()),
                 ["analytics/student_analytics.csv", "manifest.json", "plots/plot.png"],
             )
+
+    def test_saved_chart_snapshot_prevents_duplicates_and_can_be_removed(self) -> None:
+        data = pd.DataFrame({"student": ["aaa101"], "total_working_duration": [42.0]})
+        specification = json.dumps(
+            {
+                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                "mark": "bar",
+                "data": {"values": data.to_dict(orient="records")},
+            }
+        )
+        with patch(
+            "tools.analytics_dashboard.analytics_workspace.render_vega_lite_png",
+            return_value=b"\x89PNG\r\n\x1a\nrendered",
+        ):
+            saved = create_saved_chart(
+                title="Working time",
+                caption="One participant.",
+                chart_type="Bar",
+                time_unit="Minutes",
+                specification=specification,
+                plotted_data=data,
+            )
+        self.assertEqual(saved.data.to_dict(orient="records"), data.to_dict(orient="records"))
+        collection, added = add_saved_chart([], saved)
+        self.assertTrue(added)
+        collection, added = add_saved_chart(collection, saved)
+        self.assertFalse(added)
+        self.assertEqual(len(collection), 1)
+        self.assertEqual(remove_saved_chart(collection, saved.chart_id), [])
+
+    def test_saved_chart_zip_contains_only_selected_reproducible_artifacts(self) -> None:
+        selected = SavedChart(
+            chart_id="a" * 64,
+            title="Working time",
+            caption="A caption",
+            chart_type="Bar",
+            time_unit="Minutes",
+            specification='{"mark":"bar"}',
+            plotted_csv="student,value\naaa101,42\n",
+            png=b"\x89PNG\r\n\x1a\nrendered",
+        )
+        excluded = SavedChart(
+            chart_id="b" * 64,
+            title="Excluded",
+            caption="",
+            chart_type="Line",
+            time_unit="Seconds",
+            specification='{"mark":"line"}',
+            plotted_csv="x,y\n1,2\n",
+            png=b"excluded",
+        )
+        package = build_saved_charts_zip([selected])
+        with zipfile.ZipFile(io.BytesIO(package)) as archive:
+            self.assertEqual(
+                sorted(archive.namelist()),
+                [
+                    "charts/01_working_time.csv",
+                    "charts/01_working_time.png",
+                    "charts/01_working_time.vl.json",
+                    "manifest.json",
+                ],
+            )
+            manifest = json.loads(archive.read("manifest.json"))
+        self.assertEqual(manifest["saved_charts"][0]["title"], selected.title)
+        self.assertEqual(manifest["saved_charts"][0]["display_time_unit"], "Minutes")
+        self.assertNotIn(excluded.title, package.decode("latin1"))
 
     def test_raw_log_package_generates_reports(self) -> None:
         log = "\n".join(

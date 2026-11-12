@@ -19,10 +19,13 @@ from analytics_workspace import (
     aggregate_for_chart,
     apply_group_mapping,
     available_cell_labels,
+    add_saved_chart,
     build_download_zip,
+    build_saved_charts_zip,
     categorical_columns,
+    cell_duration_summary,
     chart_defaults,
-    chart_png,
+    create_saved_chart,
     convert_time_unit,
     data_quality_findings,
     filtered_frame,
@@ -31,6 +34,7 @@ from analytics_workspace import (
     is_time_measure,
     numeric_columns,
     result_from_csv_uploads,
+    remove_saved_chart,
     run_raw_log_analytics,
     search_rows,
     timestamp_columns,
@@ -60,6 +64,8 @@ def initialise_state(st: Any) -> None:
     st.session_state.setdefault("analytics_group_warnings", [])
     st.session_state.setdefault("analytics_download", None)
     st.session_state.setdefault("analytics_selected_cells", [])
+    st.session_state.setdefault("analytics_saved_charts", [])
+    st.session_state.setdefault("analytics_saved_chart_selection", [])
 
 
 def clear_analysis_session(st: Any) -> None:
@@ -68,6 +74,8 @@ def clear_analysis_session(st: Any) -> None:
     st.session_state["analytics_group_warnings"] = []
     st.session_state["analytics_download"] = None
     st.session_state["analytics_selected_cells"] = []
+    st.session_state["analytics_saved_charts"] = []
+    st.session_state["analytics_saved_chart_selection"] = []
     for key in list(st.session_state):
         if key.startswith(("chart_", "event_", "cohort_summary_", "analytics_workspace_")):
             del st.session_state[key]
@@ -98,29 +106,41 @@ def standard_bar_chart(frame: pd.DataFrame, column: str, title: str, unit: str) 
     return alt.Chart(data, title=title).mark_bar().encode(**encoding).interactive()
 
 
-def render_chart_downloads(
-    st: Any, chart: alt.Chart, data: pd.DataFrame, filename: str, key_prefix: str
+def render_save_chart_button(
+    st: Any,
+    chart: alt.Chart,
+    data: pd.DataFrame,
+    *,
+    title: str,
+    caption: str,
+    chart_type: str,
+    time_unit: str,
+    key: str,
 ) -> None:
-    """Offer the reproducible data and specification behind an Altair preview."""
-    with st.container(horizontal=True, wrap=True):
-        st.download_button(
-            "Download chart data",
-            data.to_csv(index=False).encode("utf-8"),
-            f"{filename}_data.csv",
-            "text/csv",
-            key=f"{key_prefix}_data",
-            icon=":material/table_view:",
-            on_click="ignore",
-        )
-        st.download_button(
-            "Download chart specification",
-            chart.to_json().encode("utf-8"),
-            f"{filename}.vl.json",
-            "application/json",
-            key=f"{key_prefix}_specification",
-            icon=":material/code:",
-            on_click="ignore",
-        )
+    """Save the exact visible chart for later review and one combined export."""
+    if st.button("Save chart", key=key, icon=":material/bookmark_add:"):
+        try:
+            snapshot = create_saved_chart(
+                title=title,
+                caption=caption,
+                chart_type=chart_type,
+                time_unit=time_unit,
+                specification=chart.to_json(),
+                plotted_data=data,
+            )
+            collection, added = add_saved_chart(
+                st.session_state["analytics_saved_charts"], snapshot
+            )
+            st.session_state["analytics_saved_charts"] = collection
+            if added:
+                st.session_state["analytics_saved_chart_selection"] = [
+                    *st.session_state["analytics_saved_chart_selection"], snapshot.chart_id
+                ]
+                st.success(f"Saved chart {len(collection)} of the current collection.")
+            else:
+                st.info("This exact chart and plotted data are already saved.")
+        except DashboardInputError as error:
+            st.error(str(error))
 
 
 def render_preset_views(st: Any, reports: dict[str, pd.DataFrame], time_unit: str) -> None:
@@ -138,7 +158,16 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame], time_unit: st
                 data = overview.loc[:, ["student", column] + (["group"] if "group" in overview.columns else [])]
                 with st.container(border=True):
                     st.altair_chart(chart, alt=f"{title} by participant")
-                    render_chart_downloads(st, chart, data, safe_filename(title), f"preset_{column}")
+                    render_save_chart_button(
+                        st,
+                        chart,
+                        data,
+                        title=title,
+                        caption=f"{title} by participant.",
+                        chart_type="Bar",
+                        time_unit=time_unit,
+                        key=f"save_chart_preset_{column}",
+                    )
 
         execution = {"execution_status_success", "execution_status_error"}
         if execution.issubset(overview.columns):
@@ -158,7 +187,83 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame], time_unit: st
             )
             with st.container(border=True):
                 st.altair_chart(chart, alt="Successful and failed cell runs by participant")
-                render_chart_downloads(st, chart, execution_data, "execution_outcomes", "preset_executions")
+                render_save_chart_button(
+                    st,
+                    chart,
+                    execution_data,
+                    title="Execution outcomes",
+                    caption="Successful and failed cell runs by participant.",
+                    chart_type="Bar",
+                    time_unit=time_unit,
+                    key="save_chart_preset_execution_outcomes",
+                )
+
+        cell_durations = cell_duration_summary(overview)
+        if not cell_durations.empty:
+            st.subheader("Time by assignment cell", icon=":material/timelapse:")
+            st.caption(
+                "Working time is stacked with the remaining observed time, so each full bar equals the cell's total duration."
+            )
+            duration_segments = cell_durations.melt(
+                id_vars=["student", "cell"],
+                value_vars=["working_duration", "remaining_observed_duration"],
+                var_name="duration_type",
+                value_name="duration",
+            )
+            duration_segments["duration_type"] = duration_segments["duration_type"].replace(
+                {
+                    "working_duration": "Estimated working time",
+                    "remaining_observed_duration": "Remaining observed time",
+                }
+            )
+            duration_chart = (
+                alt.Chart(duration_segments, title="Cell total duration and estimated working time")
+                .mark_bar()
+                .encode(
+                    x=alt.X("duration:Q", stack="zero", title=time_unit),
+                    y=alt.Y("student:N", title="Participant"),
+                    color=alt.Color("duration_type:N", title="Duration"),
+                    tooltip=["student:N", "cell:N", "duration_type:N", alt.Tooltip("duration:Q", format=".2f")],
+                    row=alt.Row("cell:N", title="Assignment cell"),
+                )
+                .interactive()
+            )
+            with st.container(border=True):
+                st.altair_chart(duration_chart, alt="Total and working duration by participant and assignment cell")
+                render_save_chart_button(
+                    st,
+                    duration_chart,
+                    duration_segments,
+                    title="Cell total duration and estimated working time",
+                    caption="Working time plus remaining observed time equals the total duration for each cell.",
+                    chart_type="Stacked bar",
+                    time_unit=time_unit,
+                    key="save_chart_preset_cell_duration_comparison",
+                )
+
+            allocation_chart = (
+                alt.Chart(cell_durations, title="Where participants spent estimated working time")
+                .mark_bar()
+                .encode(
+                    x=alt.X("working_duration:Q", stack="zero", title=time_unit),
+                    y=alt.Y("student:N", title="Participant"),
+                    color=alt.Color("cell:N", title="Assignment cell"),
+                    tooltip=["student:N", "cell:N", alt.Tooltip("working_duration:Q", format=".2f")],
+                )
+                .interactive()
+            )
+            with st.container(border=True):
+                st.altair_chart(allocation_chart, alt="Estimated working time allocation across assignment cells")
+                render_save_chart_button(
+                    st,
+                    allocation_chart,
+                    cell_durations.loc[:, ["student", "cell", "working_duration"]],
+                    title="Where participants spent estimated working time",
+                    caption="Each participant's bar is divided by assignment cell using estimated working duration.",
+                    chart_type="Stacked bar",
+                    time_unit=time_unit,
+                    key="save_chart_preset_working_time_allocation",
+                )
 
     clipboard = reports.get("clipboard_events")
     if clipboard is not None and {"student", "event", "character_length"}.issubset(clipboard.columns):
@@ -180,7 +285,16 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame], time_unit: st
             )
             with st.container(border=True):
                 st.altair_chart(chart, alt="Clipboard event lengths by participant and event type")
-                render_chart_downloads(st, chart, data, "clipboard_length_distribution", "preset_clipboard")
+                render_save_chart_button(
+                    st,
+                    chart,
+                    data,
+                    title="Copy, cut, and paste lengths",
+                    caption="Clipboard event lengths by participant and event type.",
+                    chart_type="Box plot",
+                    time_unit=time_unit,
+                    key="save_chart_preset_clipboard_lengths",
+                )
         else:
             st.info("Clipboard events are available, but none contain a usable character length.")
 
@@ -283,19 +397,117 @@ def render_downloads(st: Any, result: ProcessingResult) -> None:
     if not result.plots:
         return
     st.subheader("Generated standard plots", icon=":material/image:")
-    st.caption("Download individual established plots when you do not need the full result package.")
-    for name, content in sorted(result.plots.items()):
-        with st.container(horizontal=True, vertical_alignment="center"):
-            st.code(name, language=None)
-            st.download_button(
-                "Download PNG",
-                content,
-                name,
-                "image/png",
-                key=f"download_standard_plot_{name}",
-                icon=":material/image:",
-                on_click="ignore",
-            )
+    st.caption(
+        "The established plot files below remain included in the full analytics package. "
+        "Save a preset chart if you want to review it and include it in the separate selected-chart ZIP."
+    )
+    st.dataframe(
+        pd.DataFrame({"included_plot": sorted(result.plots)}),
+        hide_index=True,
+        alt="Standard plots included in the full analytics package",
+    )
+
+
+def _remove_saved_chart_from_session(st: Any, chart_id: str) -> None:
+    """Remove one chart and keep the export selection valid before rerunning."""
+    st.session_state["analytics_saved_charts"] = remove_saved_chart(
+        st.session_state["analytics_saved_charts"], chart_id
+    )
+    st.session_state["analytics_saved_chart_selection"] = [
+        selected
+        for selected in st.session_state["analytics_saved_chart_selection"]
+        if selected != chart_id
+    ]
+
+
+def _clear_saved_charts_from_session(st: Any) -> None:
+    st.session_state["analytics_saved_charts"] = []
+    st.session_state["analytics_saved_chart_selection"] = []
+
+
+def render_saved_charts(st: Any) -> None:
+    """Review temporary chart snapshots and download selected ones as one package."""
+    st.header("Saved charts", icon=":material/bookmarks:")
+    saved_charts = st.session_state["analytics_saved_charts"]
+    if not saved_charts:
+        st.info(
+            "No charts have been saved yet. Save a preset or custom chart while exploring, "
+            "then return here to review and export the selected charts together."
+        )
+        return
+
+    available_ids = [chart.chart_id for chart in saved_charts]
+    selected_ids = [
+        chart_id
+        for chart_id in st.session_state["analytics_saved_chart_selection"]
+        if chart_id in available_ids
+    ]
+    if selected_ids != st.session_state["analytics_saved_chart_selection"]:
+        st.session_state["analytics_saved_chart_selection"] = selected_ids
+    labels = {
+        chart.chart_id: f"{index}. {chart.title} ({chart.chart_type}, {chart.time_unit.lower()})"
+        for index, chart in enumerate(saved_charts, start=1)
+    }
+
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.metric("Saved charts", len(saved_charts), border=True)
+        st.metric("Selected for export", len(selected_ids), border=True)
+        st.button(
+            "Clear saved charts",
+            key="clear_saved_charts",
+            icon=":material/delete_sweep:",
+            type="secondary",
+            on_click=_clear_saved_charts_from_session,
+            args=(st,),
+        )
+
+    st.multiselect(
+        "Charts to include in the final ZIP",
+        available_ids,
+        key="analytics_saved_chart_selection",
+        format_func=lambda chart_id: labels[chart_id],
+        help="Each selected chart contributes a PNG, the exact plotted CSV data, and its Vega-Lite specification.",
+    )
+    selected_ids = st.session_state["analytics_saved_chart_selection"]
+    selected_charts = [chart for chart in saved_charts if chart.chart_id in selected_ids]
+    if selected_charts:
+        package = build_saved_charts_zip(selected_charts)
+        st.download_button(
+            "Download selected charts",
+            data=package,
+            file_name="saved_notebook_charts.zip",
+            mime="application/zip",
+            icon=":material/folder_zip:",
+            type="primary",
+            key="download_selected_saved_charts",
+            on_click="ignore",
+        )
+    else:
+        st.caption("Select at least one chart to enable the final chart package.")
+
+    for index, chart in enumerate(saved_charts, start=1):
+        with st.container(border=True):
+            heading, actions = st.columns([5, 1])
+            with heading:
+                st.subheader(f"{index}. {chart.title}")
+                st.caption(f"{chart.chart_type} · Displayed in {chart.time_unit.lower()}")
+            with actions:
+                st.button(
+                    "Remove",
+                    key=f"remove_saved_chart_{chart.chart_id}",
+                    icon=":material/delete:",
+                    on_click=_remove_saved_chart_from_session,
+                    args=(st, chart.chart_id),
+                )
+            try:
+                st.altair_chart(
+                    alt.Chart.from_json(chart.specification),
+                    alt=f"Saved chart: {chart.title}",
+                )
+            except Exception:
+                st.warning("The interactive preview could not be reconstructed, but its PNG and data remain exportable.")
+            if chart.caption:
+                st.caption(chart.caption)
 
 
 def reset_chart_controls(st: Any) -> None:
@@ -313,17 +525,11 @@ def select_with_default(
     return st.selectbox(label, options, key=key, **kwargs)
 
 
-def safe_filename(value: str) -> str:
-    """Return a readable, filesystem-safe stem for a chart download."""
-    clean = "".join(character.lower() if character.isalnum() else " " for character in value)
-    return "_".join(clean.split()) or "custom_chart"
-
-
 def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame], time_unit: str) -> None:
     st.header("Build a custom chart", icon=":material/bar_chart:")
     st.caption(
         "Choose a chart type to see a useful preview from your data. Every setting updates the preview immediately; "
-        "download the finished chart, its data, or its Vega-Lite specification below."
+        "save the finished chart to review and download with the rest of your selected charts."
     )
     if st.session_state.get("chart_dataset") not in reports:
         st.session_state["chart_dataset"] = sorted(reports)[0]
@@ -461,23 +667,21 @@ def render_chart_builder(st: Any, reports: dict[str, pd.DataFrame], time_unit: s
 
     with st.container(border=True):
         st.subheader("Preview", icon=":material/visibility:")
-        st.altair_chart(chart.interactive(), alt=f"Custom {chart_type.lower()} chart: {title}")
+        interactive_chart = chart.interactive()
+        st.altair_chart(interactive_chart, alt=f"Custom {chart_type.lower()} chart: {title}")
         if caption:
             st.caption(caption)
         st.dataframe(plotted, hide_index=True, alt="Data currently shown in the custom chart")
-        filename = safe_filename(title)
-        try:
-            png = chart_png(
-                plotted, chart_type, x, value_column, group, title, x_label, y_label, colour, palette
-            )
-        except Exception as error:
-            st.warning(f"The interactive preview is available, but its PNG could not be created: {error}")
-            png = None
-        with st.container(horizontal=True, wrap=True):
-            if png is not None:
-                st.download_button("Download PNG", png, f"{filename}.png", "image/png", icon=":material/image:", on_click="ignore")
-            st.download_button("Download chart data", plotted.to_csv(index=False).encode("utf-8"), f"{filename}_data.csv", "text/csv", icon=":material/table_view:", on_click="ignore")
-            st.download_button("Download chart specification", chart.to_json().encode("utf-8"), f"{filename}.vl.json", "application/json", icon=":material/code:", on_click="ignore")
+        render_save_chart_button(
+            st,
+            interactive_chart,
+            plotted,
+            title=title,
+            caption=caption,
+            chart_type=chart_type,
+            time_unit=time_unit,
+            key="save_chart_custom_preview",
+        )
 
 
 def render_cell_selection(st: Any, original_reports: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -572,6 +776,8 @@ def main() -> None:
                         st.session_state["analytics_group_warnings"] = mapping_warnings
                         st.session_state["analytics_download"] = build_download_zip(result)
                         st.session_state["analytics_selected_cells"] = available_cell_labels(result.reports)
+                        st.session_state["analytics_saved_charts"] = []
+                        st.session_state["analytics_saved_chart_selection"] = []
                 except DashboardInputError as error:
                     st.error(str(error))
                 except Exception as error:
@@ -612,10 +818,19 @@ def main() -> None:
             border=True,
         )
         st.metric("Generated plots", len(result.plots), border=True)
+        st.metric("Saved charts", len(st.session_state["analytics_saved_charts"]), border=True)
 
     view = st.segmented_control(
         "Workspace view",
-        ["Overview", "Data quality", "Preset views", "Event reports", "Custom chart", "Download"],
+        [
+            "Overview",
+            "Data quality",
+            "Preset views",
+            "Event reports",
+            "Custom chart",
+            "Saved charts",
+            "Download",
+        ],
         default="Overview",
         required=True,
         key="analytics_workspace_view",
@@ -650,6 +865,8 @@ def main() -> None:
         render_event_tables(st, reports)
     elif view == "Custom chart":
         render_chart_builder(st, reports, time_unit)
+    elif view == "Saved charts":
+        render_saved_charts(st)
     elif view == "Download":
         render_downloads(st, result)
 

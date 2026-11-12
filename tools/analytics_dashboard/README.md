@@ -49,23 +49,27 @@ The workspace provides a guided workflow with these views:
   duplicate overall participant rows, empty reports, and negative numeric
   values. It checks report integrity, not the validity of research conclusions.
 - **Preset views:** established working-time, idle-time, execution-outcome, and
-  clipboard-distribution views. Their chart data and Vega-Lite specifications
-  can be downloaded individually.
+  clipboard-distribution views. Save useful views while exploring rather than
+  downloading files one at a time.
 - **Event reports:** searchable event tables with a visible-column chooser and
   a download for the currently displayed rows.
 - **Custom chart:** a flexible chart builder for any compatible report columns.
+- **Saved charts:** review saved preset and custom charts, select the ones to
+  keep, and download one reproducible ZIP.
 
 Use the **Display time in** control to switch duration-style measures between
 seconds and minutes. This changes values shown in dashboard tables, summaries,
 and charts only; the downloaded analytics package keeps the original seconds
 values.
 
-The custom chart builder
-starts with a useful chart based on the selected data and updates the preview
-as settings change. It explains what each chart type needs and lets you choose
-the source columns, filters, aggregation, title, caption, axis labels, and
-colours. Download each custom chart as a PNG, the exact plotted table as CSV,
-or its Vega-Lite chart specification as JSON.
+The custom chart builder starts with a useful chart based on the selected data
+and updates the preview as settings change. It explains what each chart type
+needs and lets you choose the source columns, filters, aggregation, title,
+caption, axis labels, and colours. Use **Save chart** on a preset or custom
+view to capture its rendered PNG, exact plotted data, Vega-Lite specification,
+and current seconds/minutes setting. In **Saved charts**, select the snapshots
+you want and download one ZIP containing a PNG, CSV, JSON specification, and
+manifest entry for each selected chart.
 
 Chart requirements are kept deliberately simple:
 
@@ -80,4 +84,5 @@ Downloaded result packages contain generated CSVs, available PNG plots, and a
 manifest, but never the raw uploaded logs.
 
 Use **Start a new analysis** to remove uploads and derived results from the
-current browser session. This does not alter any local source files.
+current browser session, including saved charts. This does not alter any local
+source files.
