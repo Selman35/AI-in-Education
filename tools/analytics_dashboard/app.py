@@ -198,49 +198,60 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame], time_unit: st
                     key="save_chart_preset_execution_outcomes",
                 )
 
-        cell_durations = cell_duration_summary(overview)
-        if not cell_durations.empty:
-            st.subheader("Time by assignment cell", icon=":material/timelapse:")
+        if {"total_duration", "total_working_duration"}.issubset(overview.columns):
+            st.subheader("Overall duration and estimated working time", icon=":material/timelapse:")
             st.caption(
-                "Working time is stacked with the remaining observed time, so each full bar equals the cell's total duration."
+                "Working time is stacked with the remaining observed time, so each full bar equals the participant's total duration."
             )
-            duration_segments = cell_durations.melt(
-                id_vars=["student", "cell"],
-                value_vars=["working_duration", "remaining_observed_duration"],
+            overall_duration = overview.loc[:, ["student", "total_duration", "total_working_duration"]].copy()
+            overall_duration["total_duration"] = pd.to_numeric(
+                overall_duration["total_duration"], errors="coerce"
+            ).fillna(0).clip(lower=0)
+            overall_duration["total_working_duration"] = pd.to_numeric(
+                overall_duration["total_working_duration"], errors="coerce"
+            ).fillna(0).clip(lower=0, upper=overall_duration["total_duration"])
+            overall_duration["remaining_observed_duration"] = (
+                overall_duration["total_duration"] - overall_duration["total_working_duration"]
+            )
+            duration_segments = overall_duration.melt(
+                id_vars=["student"],
+                value_vars=["total_working_duration", "remaining_observed_duration"],
                 var_name="duration_type",
                 value_name="duration",
             )
             duration_segments["duration_type"] = duration_segments["duration_type"].replace(
                 {
-                    "working_duration": "Estimated working time",
+                    "total_working_duration": "Estimated working time",
                     "remaining_observed_duration": "Remaining observed time",
                 }
             )
             duration_chart = (
-                alt.Chart(duration_segments, title="Cell total duration and estimated working time")
+                alt.Chart(duration_segments, title="Overall duration and estimated working time")
                 .mark_bar()
                 .encode(
                     x=alt.X("duration:Q", stack="zero", title=time_unit),
                     y=alt.Y("student:N", title="Participant"),
                     color=alt.Color("duration_type:N", title="Duration"),
-                    tooltip=["student:N", "cell:N", "duration_type:N", alt.Tooltip("duration:Q", format=".2f")],
-                    row=alt.Row("cell:N", title="Assignment cell"),
+                    tooltip=["student:N", "duration_type:N", alt.Tooltip("duration:Q", format=".2f")],
                 )
                 .interactive()
             )
             with st.container(border=True):
-                st.altair_chart(duration_chart, alt="Total and working duration by participant and assignment cell")
+                st.altair_chart(duration_chart, alt="Overall total and working duration by participant")
                 render_save_chart_button(
                     st,
                     duration_chart,
                     duration_segments,
-                    title="Cell total duration and estimated working time",
-                    caption="Working time plus remaining observed time equals the total duration for each cell.",
+                    title="Overall duration and estimated working time",
+                    caption="Working time plus remaining observed time equals the total duration for each participant.",
                     chart_type="Stacked bar",
                     time_unit=time_unit,
-                    key="save_chart_preset_cell_duration_comparison",
+                    key="save_chart_preset_overall_duration_comparison",
                 )
 
+        cell_durations = cell_duration_summary(overview)
+        if not cell_durations.empty:
+            st.subheader("Estimated working-time allocation by assignment cell", icon=":material/account_tree:")
             allocation_chart = (
                 alt.Chart(cell_durations, title="Where participants spent estimated working time")
                 .mark_bar()

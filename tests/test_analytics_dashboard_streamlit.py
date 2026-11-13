@@ -109,7 +109,7 @@ class AnalyticsDashboardStreamlitTests(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertEqual(app.session_state["analytics_saved_charts"], [])
 
-    def test_cell_duration_presets_render_when_cell_metrics_are_available(self) -> None:
+    def test_overall_duration_and_cell_allocation_presets_render(self) -> None:
         from streamlit.testing.v1 import AppTest
 
         app = AppTest.from_file(str(APP_PATH), default_timeout=20)
@@ -118,6 +118,8 @@ class AnalyticsDashboardStreamlitTests(unittest.TestCase):
                 "student_analytics": pd.DataFrame(
                     {
                         "student": ["aaa101__pilot"],
+                        "total_duration": [120],
+                        "total_working_duration": [90],
                         "task_1_code_total_duration": [120],
                         "task_1_code_working_duration": [90],
                     }
@@ -133,7 +135,7 @@ class AnalyticsDashboardStreamlitTests(unittest.TestCase):
         app.run()
         app.segmented_control(key="analytics_workspace_view").set_value("Preset views").run()
         self.assertFalse(app.exception)
-        self.assertIsNotNone(app.button(key="save_chart_preset_cell_duration_comparison"))
+        self.assertIsNotNone(app.button(key="save_chart_preset_overall_duration_comparison"))
         self.assertIsNotNone(app.button(key="save_chart_preset_working_time_allocation"))
 
     def test_all_workspace_views_render_for_a_complete_report_set(self) -> None:
