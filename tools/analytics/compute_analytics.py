@@ -26,6 +26,14 @@ Calculates the following metrics per notebook log (one row per notebook):
 - char_diff_added_characters: exact characters inserted between snapshots
 - char_diff_removed_characters: exact characters deleted between snapshots
 - char_diff_net_character_change: inserted characters minus deleted characters
+- revision_added_characters: post-template-baseline inserted characters
+- revision_removed_characters: post-template-baseline removed characters
+- revision_ratio: removed / (added + removed) after the template baseline
+- revision_changed_save_count: source-changing saves after the template baseline
+- error_episode_count: distinct cell-level debugging episodes
+- recovered_error_episode_count: episodes fixed after an observed edit
+- error_recovery_rate: recovered episodes divided by all error episodes
+- median_error_recovery_seconds: median error-to-success repair duration
 Additionally, for each distinct cell seen in the logs, the script creates column groups
 using a readable label (for example, ``cell_1``):
   cell_1_total_duration
@@ -69,6 +77,8 @@ EXECUTION_SUMMARY_FILENAME = "cell_execution_summary.csv"
 IDLE_EVENTS_FILENAME = "idle_events.csv"
 ACTIVE_SESSIONS_FILENAME = "active_sessions.csv"
 CLIPBOARD_EVENTS_FILENAME = "clipboard_events.csv"
+ERROR_RECOVERY_EVENTS_FILENAME = "error_recovery_events.csv"
+SOLUTION_GROWTH_EVENTS_FILENAME = "solution_growth_events.csv"
 VERSION_LOG_DIRNAME = "versions"
 CELL_VERSION_LOG_DIRNAME = "cell_versions"
 WORKING_ACTIVITY_GAP = 45.0  # maximum seconds between actions counted as active work
@@ -77,6 +87,7 @@ IDLE_ACTIVITY_THRESHOLD = 120.0  # seconds without meaningful student activity
 # browser lifecycle event, so they are excluded from observed idle time.
 MAX_IDLE_OBSERVATION_GAP = 60 * 60.0  # one hour
 ACTIVE_SESSION_GAP = 5 * 60.0  # seconds between meaningful actions
+ERROR_RECOVERY_INACTIVE_GAP = 2 * 60.0  # brief absence does not end a repair attempt
 LEGACY_EXECUTION_MATCH_WINDOW = 5.0  # seconds
 MEANINGFUL_ACTIVITY_EVENTS = {"edit", "copy", "cut", "paste", "execute"}
 ASSIGNMENT_PRESENCE_EVENTS = {"assignment-active", "assignment-inactive"}
@@ -286,6 +297,101 @@ def compute_execution_stats(df: pd.DataFrame):
     return total_exec, success, error
 
 
+def compute_error_recovery_events(df: pd.DataFrame, cell_labels: dict):
+    """Identify cell-specific error episodes and edit-based successful recovery."""
+    relevant = df[
+        df.event.isin(MEANINGFUL_ACTIVITY_EVENTS | ASSIGNMENT_PRESENCE_EVENTS)
+    ].sort_values("ts")
+    episodes = {}
+    results = []
+    last_meaningful = None
+    inactive_since = None
+
+    def cell_key(event):
+        return event.cell if pd.notna(event.cell) else "__unknown__"
+
+    def close_episode(key, timestamp, reason, recovered=False):
+        episode = episodes.pop(key, None)
+        if episode is None:
+            return
+        results.append(
+            {
+                "cell": episode["cell"],
+                "error_time": episode["error_time"],
+                "closure_time": timestamp,
+                "recovered": recovered,
+                "closure_reason": reason,
+                "recovery_duration_seconds": (
+                    (timestamp - episode["error_time"]).total_seconds() if recovered else np.nan
+                ),
+            }
+        )
+
+    def close_all(timestamp, reason):
+        for key in list(episodes):
+            close_episode(key, timestamp, reason)
+
+    for _, event in relevant.iterrows():
+        if event.event == "assignment-inactive":
+            inactive_since = event.ts
+            continue
+        if event.event == "assignment-active":
+            if inactive_since is not None:
+                absence = (event.ts - inactive_since).total_seconds()
+                if absence >= ERROR_RECOVERY_INACTIVE_GAP:
+                    close_all(inactive_since + timedelta(seconds=ERROR_RECOVERY_INACTIVE_GAP), "assignment_inactive_2min")
+            inactive_since = None
+            continue
+
+        if inactive_since is not None:
+            absence = (event.ts - inactive_since).total_seconds()
+            if absence >= ERROR_RECOVERY_INACTIVE_GAP:
+                close_all(inactive_since + timedelta(seconds=ERROR_RECOVERY_INACTIVE_GAP), "assignment_inactive_2min")
+            inactive_since = None
+        if last_meaningful is not None and (event.ts - last_meaningful).total_seconds() >= ACTIVE_SESSION_GAP:
+            close_all(last_meaningful + timedelta(seconds=ACTIVE_SESSION_GAP), "five_minute_gap")
+        last_meaningful = event.ts
+
+        key = cell_key(event)
+        if event.event == "edit" and key in episodes:
+            episodes[key]["edited"] = True
+        elif event.event == "execute" and event.status == "error":
+            episodes.setdefault(
+                key,
+                {
+                    "cell": cell_labels.get(event.cell, "unknown"),
+                    "error_time": event.ts,
+                    "edited": False,
+                },
+            )
+        elif event.event == "execute" and event.status == "success" and key in episodes:
+            edited = episodes[key]["edited"]
+            close_episode(
+                key,
+                event.ts,
+                "recovered_after_edit" if edited else "successful_rerun_without_edit",
+                recovered=edited,
+            )
+
+    end_time = df.ts.max() if not df.empty else None
+    if end_time is not None:
+        close_all(end_time, "end_of_log")
+    return results
+
+
+def compute_error_recovery_summary(events):
+    """Summarise debugging episodes while preserving no-error as an undefined rate."""
+    episode_count = len(events)
+    recovered = [event for event in events if event["recovered"]]
+    durations = [event["recovery_duration_seconds"] for event in recovered]
+    return {
+        "error_episode_count": episode_count,
+        "recovered_error_episode_count": len(recovered),
+        "error_recovery_rate": len(recovered) / episode_count if episode_count else np.nan,
+        "median_error_recovery_seconds": float(np.median(durations)) if durations else np.nan,
+    }
+
+
 def parse_version_snapshots(path: str):
     """Read source snapshots from a versions log in chronological order."""
     if not os.path.exists(path):
@@ -389,9 +495,174 @@ def parse_cell_version_snapshots(path: str):
                         else f"cell_{cell_index}"
                     ),
                     "source": source,
+                    "cell_type": cell.get("cell_type"),
+                    "source_editable": cell.get("source_editable"),
                 }
-            snapshots.append({"kind": record.get("kind", "save"), "cells": snapshot})
+            snapshots.append({
+                "kind": record.get("kind", "save"),
+                "cells": snapshot,
+                "timestamp": record.get("timestamp"),
+            })
     return snapshots
+
+
+def student_writable_code_labels(cell_version_log_path: str):
+    """Return labels of code cells that a student may edit, when recorded.
+
+    Older snapshots lack policy/type metadata, so new code-only measures are
+    intentionally unavailable rather than guessing from a cell-key name.
+    """
+    snapshots = parse_cell_version_snapshots(cell_version_log_path)
+    if snapshots is None:
+        return None
+    labels = set()
+    metadata_available = False
+    for snapshot in snapshots:
+        for cell in snapshot["cells"].values():
+            if cell.get("cell_type") in {"code", "markdown"}:
+                metadata_available = True
+            if cell.get("cell_type") == "code" and cell.get("source_editable") is True:
+                labels.add(cell["label"])
+    return labels if metadata_available else None
+
+
+def _code_cell_events(df: pd.DataFrame, cell_labels: dict, code_labels: set[str] | None):
+    """Keep meaningful events for known student-editable code cells only."""
+    if code_labels is None:
+        return pd.DataFrame(columns=df.columns)
+    selected = df[df.event.isin(MEANINGFUL_ACTIVITY_EVENTS)].copy()
+    selected["analytics_label"] = selected.cell.map(cell_labels)
+    return selected[selected.analytics_label.isin(code_labels)].sort_values("ts")
+
+
+def compute_code_work_metrics(df: pd.DataFrame, cell_labels: dict, code_labels: set[str] | None):
+    """Compute code-writing, testing, persistence, and revisit indicators."""
+    empty = {label: {} for label in (code_labels or set())}
+    events = _code_cell_events(df, cell_labels, code_labels)
+    if events.empty:
+        return empty
+    start_events = df[df.event == "assignment-active"]
+    start_time = start_events.ts.min() if not start_events.empty else df.ts.min()
+    results = {}
+    for label in sorted(code_labels or set()):
+        group = events[events.analytics_label == label]
+        if group.empty:
+            results[label] = {}
+            continue
+        executions = group[group.event == "execute"]
+        first_action = group.ts.min()
+        first_execution = executions.ts.min() if not executions.empty else None
+        changed_since_execution = True
+        repeat_executions = 0
+        execution_before_edit = 0
+        error_streak = 0
+        max_error_streak = 0
+        for _, event in group.iterrows():
+            if event.event == "edit":
+                changed_since_execution = True
+            elif event.event == "execute":
+                if repeat_executions and not changed_since_execution:
+                    execution_before_edit += 1
+                if repeat_executions >= 0:
+                    repeat_executions += 1
+                changed_since_execution = False
+                if event.status == "error":
+                    error_streak += 1
+                    max_error_streak = max(max_error_streak, error_streak)
+                elif event.status == "success":
+                    error_streak = 0
+        execution_count = len(executions)
+        repeat_count = max(0, execution_count - 1)
+        working_seconds = compute_working_duration(group)
+        results[label] = {
+            "time_to_first_action_seconds": (first_action - start_time).total_seconds(),
+            "time_to_first_execution_seconds": (
+                (first_execution - start_time).total_seconds()
+                if first_execution is not None else np.nan
+            ),
+            "execution_before_edit_count": execution_before_edit,
+            "execution_before_edit_ratio": (
+                execution_before_edit / repeat_count if repeat_count else np.nan
+            ),
+            "testing_frequency_per_working_minute": (
+                execution_count / (working_seconds / 60.0) if working_seconds else np.nan
+            ),
+            "max_consecutive_errors": max_error_streak,
+            "task_revisit_count": 0,
+            "_execution_count": execution_count,
+            "_working_seconds": working_seconds,
+        }
+
+    # A revisit is a return to a code cell that has already succeeded after
+    # meaningful work in another writable code cell.
+    succeeded, previous_label = set(), None
+    for _, event in events.iterrows():
+        label = event.analytics_label
+        if previous_label is not None and label != previous_label and label in succeeded:
+            results[label]["task_revisit_count"] += 1
+        if event.event == "execute" and event.status == "success":
+            succeeded.add(label)
+        previous_label = label
+    return results
+
+
+def compute_code_work_summary(metrics):
+    """Aggregate code-cell indicators without mixing error streaks across tasks."""
+    if not metrics:
+        return None
+    values = list(metrics.values())
+    def median(name):
+        numbers = [value[name] for value in values if name in value and pd.notna(value[name])]
+        return float(np.median(numbers)) if numbers else np.nan
+    total_repeats = sum(
+        max(0, value.get("_execution_count", 0) - 1) for value in values
+    )
+    unchanged = sum(value.get("execution_before_edit_count", 0) for value in values)
+    return {
+        "median_time_to_first_code_action_seconds": median("time_to_first_action_seconds"),
+        "median_time_to_first_code_execution_seconds": median("time_to_first_execution_seconds"),
+        "execution_before_edit_count": unchanged,
+        "execution_before_edit_ratio": unchanged / total_repeats if total_repeats else np.nan,
+        "testing_frequency_per_working_minute": (
+            sum(value.get("_execution_count", 0) for value in values)
+            / (sum(value.get("_working_seconds", 0.0) for value in values) / 60.0)
+            if sum(value.get("_working_seconds", 0.0) for value in values) else np.nan
+        ),
+        "max_consecutive_errors": max((value.get("max_consecutive_errors", 0) for value in values), default=0),
+        "task_revisit_count": sum(value.get("task_revisit_count", 0) for value in values),
+    }
+
+
+def compute_solution_growth_events(cell_version_log_path: str):
+    """Return writable-code character/line counts for each saved snapshot."""
+    snapshots = parse_cell_version_snapshots(cell_version_log_path)
+    if snapshots is None or not any(item["kind"] == "baseline" for item in snapshots):
+        return []
+    baseline = next(item for item in snapshots if item["kind"] == "baseline")["cells"]
+    code_ids = {
+        cell_id for cell_id, cell in baseline.items()
+        if cell.get("cell_type") == "code" and cell.get("source_editable") is True
+    }
+    if not code_ids:
+        return []
+    baseline_chars = sum(len(baseline[cell_id]["source"]) for cell_id in code_ids if cell_id in baseline)
+    baseline_lines = sum(len(baseline[cell_id]["source"].splitlines()) for cell_id in code_ids if cell_id in baseline)
+    events = []
+    for snapshot in snapshots:
+        if snapshot["kind"] != "save" or not isinstance(snapshot.get("timestamp"), str):
+            continue
+        current = snapshot["cells"]
+        code_cells = [current[cell_id] for cell_id in code_ids if cell_id in current]
+        chars = sum(len(cell["source"]) for cell in code_cells)
+        lines = sum(len(cell["source"].splitlines()) for cell in code_cells)
+        events.append({
+            "timestamp": snapshot["timestamp"],
+            "code_character_count": chars,
+            "code_line_count": lines,
+            "net_code_characters_from_baseline": chars - baseline_chars,
+            "net_code_lines_from_baseline": lines - baseline_lines,
+        })
+    return events
 
 
 def compute_cell_character_diff_stats(cell_version_log_path: str):
@@ -437,6 +708,79 @@ def compute_cell_character_diff_stats(cell_version_log_path: str):
             "char_diff_net_character_change": values["added"] - values["removed"],
         }
         for label, values in stats.items()
+    }
+
+
+def compute_cell_revision_stats(cell_version_log_path: str):
+    """Measure source revisions after a prepared-notebook template baseline.
+
+    Older logs without an explicit baseline are intentionally unavailable: their
+    first snapshot may contain the assignment template and cannot safely be
+    attributed to the student.
+    """
+    snapshots = parse_cell_version_snapshots(cell_version_log_path)
+    if snapshots is None or not any(snapshot["kind"] == "baseline" for snapshot in snapshots):
+        return None
+
+    stats = {}
+    previous = {}
+    has_baseline = False
+    for snapshot in snapshots:
+        current = snapshot["cells"]
+        if snapshot["kind"] == "baseline":
+            previous = current
+            has_baseline = True
+            for cell in current.values():
+                stats.setdefault(cell["label"], {"added": 0, "removed": 0, "changed_saves": 0})
+            continue
+        if not has_baseline:
+            continue
+        for cell_id in previous.keys() | current.keys():
+            old_cell = previous.get(cell_id, {"source": "", "label": None})
+            new_cell = current.get(cell_id, {"source": "", "label": None})
+            label = new_cell["label"] or old_cell["label"]
+            if label is None or old_cell["source"] == new_cell["source"]:
+                continue
+            values = stats.setdefault(label, {"added": 0, "removed": 0, "changed_saves": 0})
+            values["changed_saves"] += 1
+            matcher = difflib.SequenceMatcher(
+                a=old_cell["source"], b=new_cell["source"], autojunk=False
+            )
+            for operation, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+                if operation in ("delete", "replace"):
+                    values["removed"] += old_end - old_start
+                if operation in ("insert", "replace"):
+                    values["added"] += new_end - new_start
+        previous = current
+
+    return {
+        label: {
+            "revision_added_characters": values["added"],
+            "revision_removed_characters": values["removed"],
+            "revision_ratio": (
+                values["removed"] / (values["added"] + values["removed"])
+                if values["added"] + values["removed"]
+                else 0.0
+            ),
+            "revision_changed_save_count": values["changed_saves"],
+        }
+        for label, values in stats.items()
+    }
+
+
+def compute_revision_summary(cell_revision_stats):
+    """Aggregate per-cell post-baseline revision metrics for one notebook."""
+    if cell_revision_stats is None:
+        return None
+    added = sum(values["revision_added_characters"] for values in cell_revision_stats.values())
+    removed = sum(values["revision_removed_characters"] for values in cell_revision_stats.values())
+    return {
+        "revision_added_characters": added,
+        "revision_removed_characters": removed,
+        "revision_ratio": removed / (added + removed) if added + removed else 0.0,
+        "revision_changed_save_count": sum(
+            values["revision_changed_save_count"] for values in cell_revision_stats.values()
+        ),
     }
 
 
@@ -738,6 +1082,8 @@ def process_folder(folder: str, output_folder: str | None = None):
     idle_rows = []
     active_session_rows = []
     clipboard_rows = []
+    error_recovery_rows = []
+    solution_growth_rows = []
     # Collect union of cell IDs across all students to ensure consistent columns
     all_cell_keys = set()
 
@@ -754,14 +1100,18 @@ def process_folder(folder: str, output_folder: str | None = None):
         cell_labels = resolve_cell_labels(df)
         idle_events = compute_idle_events(df, cell_labels)
         active_sessions = compute_active_sessions(df, cell_labels)
+        error_recovery_events = compute_error_recovery_events(df, cell_labels)
         row.update(compute_idle_summary(idle_events))
         row.update(compute_active_session_summary(active_sessions))
+        row.update(compute_error_recovery_summary(error_recovery_events))
 
         for event in idle_events:
             idle_rows.append({"student": student, **event})
         if active_sessions is not None:
             for session in active_sessions:
                 active_session_rows.append({"student": student, **session})
+        for event in error_recovery_events:
+            error_recovery_rows.append({"student": student, **event})
 
         for _, event in df[df.event.isin(["copy", "cut", "paste"])].iterrows():
             if pd.isna(event.length):
@@ -811,11 +1161,39 @@ def process_folder(folder: str, output_folder: str | None = None):
         )
         cell_character_stats = compute_cell_character_diff_stats(cell_version_path)
         cell_line_stats = compute_cell_line_diff_stats(cell_version_path)
+        cell_revision_stats = compute_cell_revision_stats(cell_version_path)
+        code_labels = student_writable_code_labels(cell_version_path)
+        code_work_metrics = compute_code_work_metrics(df, cell_labels, code_labels)
+        code_work_summary = compute_code_work_summary(code_work_metrics)
+        for event in compute_solution_growth_events(cell_version_path):
+            solution_growth_rows.append({"student": student, **event})
         row.update(
             compute_character_diff_summary(cell_character_stats)
             or compute_character_diff_stats(version_path)
         )
         row.update(compute_line_diff_summary(cell_line_stats))
+        revision_summary = compute_revision_summary(cell_revision_stats)
+        if revision_summary is None:
+            row.update({
+                "revision_added_characters": np.nan,
+                "revision_removed_characters": np.nan,
+                "revision_ratio": np.nan,
+                "revision_changed_save_count": np.nan,
+            })
+        else:
+            row.update(revision_summary)
+        if code_work_summary is None:
+            row.update({
+                "median_time_to_first_code_action_seconds": np.nan,
+                "median_time_to_first_code_execution_seconds": np.nan,
+                "execution_before_edit_count": np.nan,
+                "execution_before_edit_ratio": np.nan,
+                "testing_frequency_per_working_minute": np.nan,
+                "max_consecutive_errors": np.nan,
+                "task_revisit_count": np.nan,
+            })
+        else:
+            row.update(code_work_summary)
 
         # Per-cell
         cell_metrics = compute_per_cell_metrics(df)
@@ -856,6 +1234,28 @@ def process_folder(folder: str, output_folder: str | None = None):
                 row[f"{label}_removed_lines"] = metrics["removed_lines"]
                 row[f"{label}_modified_lines"] = metrics["modified_lines"]
 
+        if cell_revision_stats is not None:
+            for label, metrics in cell_revision_stats.items():
+                all_cell_keys.add(label)
+                row[f"{label}_revision_added_characters"] = metrics["revision_added_characters"]
+                row[f"{label}_revision_removed_characters"] = metrics["revision_removed_characters"]
+                row[f"{label}_revision_ratio"] = metrics["revision_ratio"]
+                row[f"{label}_revision_changed_save_count"] = metrics["revision_changed_save_count"]
+
+        for label, metrics in code_work_metrics.items():
+            all_cell_keys.add(label)
+            for name, value in metrics.items():
+                if not name.startswith("_"):
+                    row[f"{label}_{name}"] = value
+
+        recovery_by_cell = {}
+        for event in error_recovery_events:
+            recovery_by_cell.setdefault(event["cell"], []).append(event)
+        for label, events in recovery_by_cell.items():
+            all_cell_keys.add(label)
+            for key, value in compute_error_recovery_summary(events).items():
+                row[f"{label}_{key}"] = value
+
         idle_by_cell = {}
         for event in idle_events:
             stats = idle_by_cell.setdefault(event["start_cell"], [])
@@ -893,6 +1293,21 @@ def process_folder(folder: str, output_folder: str | None = None):
             f"{san}_added_lines",
             f"{san}_removed_lines",
             f"{san}_modified_lines",
+            f"{san}_revision_added_characters",
+            f"{san}_revision_removed_characters",
+            f"{san}_revision_ratio",
+            f"{san}_revision_changed_save_count",
+            f"{san}_error_episode_count",
+            f"{san}_recovered_error_episode_count",
+            f"{san}_error_recovery_rate",
+            f"{san}_median_error_recovery_seconds",
+            f"{san}_time_to_first_action_seconds",
+            f"{san}_time_to_first_execution_seconds",
+            f"{san}_execution_before_edit_count",
+            f"{san}_execution_before_edit_ratio",
+            f"{san}_testing_frequency_per_working_minute",
+            f"{san}_max_consecutive_errors",
+            f"{san}_task_revisit_count",
         ]
         for c in cols:
             if c not in df_out.columns:
@@ -905,6 +1320,12 @@ def process_folder(folder: str, output_folder: str | None = None):
                     # Older logs have no structured cell snapshots; blank means
                     # unavailable rather than a measured value of zero.
                     df_out[c] = np.nan
+                elif "_revision_" in c or c.endswith(("_error_recovery_rate", "_median_error_recovery_seconds")):
+                    df_out[c] = np.nan
+                elif c.endswith(("_time_to_first_action_seconds", "_time_to_first_execution_seconds", "_execution_before_edit_count", "_execution_before_edit_ratio", "_testing_frequency_per_working_minute", "_max_consecutive_errors", "_task_revisit_count")):
+                    df_out[c] = np.nan
+                elif c.endswith(("_error_episode_count", "_recovered_error_episode_count")):
+                    df_out[c] = 0
                 elif c.endswith(("_added_lines", "_removed_lines", "_modified_lines")):
                     # Older logs have no structured cell snapshots, so an
                     # accurate semantic line count is unavailable.
@@ -940,6 +1361,21 @@ def process_folder(folder: str, output_folder: str | None = None):
         "char_diff_added_characters",
         "char_diff_removed_characters",
         "char_diff_net_character_change",
+        "revision_added_characters",
+        "revision_removed_characters",
+        "revision_ratio",
+        "revision_changed_save_count",
+        "error_episode_count",
+        "recovered_error_episode_count",
+        "error_recovery_rate",
+        "median_error_recovery_seconds",
+        "median_time_to_first_code_action_seconds",
+        "median_time_to_first_code_execution_seconds",
+        "execution_before_edit_count",
+        "execution_before_edit_ratio",
+        "testing_frequency_per_working_minute",
+        "max_consecutive_errors",
+        "task_revisit_count",
     ]
     cell_cols = [c for c in df_out.columns if c not in overall_cols]
     df_out = df_out[overall_cols + sorted(cell_cols)]
@@ -979,6 +1415,26 @@ def process_folder(folder: str, output_folder: str | None = None):
         columns=["student", "timestamp", "event", "cell", "character_length"],
     ).to_csv(clipboard_path, index=False)
     print(f"Saved clipboard events to {clipboard_path}")
+
+    recovery_path = os.path.join(output_folder, ERROR_RECOVERY_EVENTS_FILENAME)
+    pd.DataFrame(
+        error_recovery_rows,
+        columns=[
+            "student", "cell", "error_time", "closure_time", "recovered",
+            "closure_reason", "recovery_duration_seconds",
+        ],
+    ).to_csv(recovery_path, index=False)
+    print(f"Saved error recovery events to {recovery_path}")
+
+    growth_path = os.path.join(output_folder, SOLUTION_GROWTH_EVENTS_FILENAME)
+    pd.DataFrame(
+        solution_growth_rows,
+        columns=[
+            "student", "timestamp", "code_character_count", "code_line_count",
+            "net_code_characters_from_baseline", "net_code_lines_from_baseline",
+        ],
+    ).to_csv(growth_path, index=False)
+    print(f"Saved solution growth events to {growth_path}")
 
 if __name__ == "__main__":
     import sys

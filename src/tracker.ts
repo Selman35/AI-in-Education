@@ -563,10 +563,31 @@ export class FocusChangeAutoSaveTracker {
     return typeof key === 'string' && key.trim() ? key.trim() : undefined;
   }
 
+  /** Keep enough cell metadata in snapshots for analytics to distinguish
+   * writable student code from locked instructions and starter code. */
+  private getSnapshotCellDetails(cell: any): {
+    cell_type?: string;
+    source_editable?: boolean;
+  } {
+    const authoring = cell?.metadata?.assignment_authoring;
+    const policy = authoring?.policy;
+    return {
+      cell_type: typeof cell?.cell_type === 'string' ? cell.cell_type : undefined,
+      // Ordinary notebooks have no assignment policy, so their code remains
+      // treated as student-editable. Prepared assignments use the explicit policy.
+      source_editable:
+        typeof policy?.source_editable === 'boolean'
+          ? policy.source_editable
+          : true
+    };
+  }
+
   private getAssignmentBaselineSnapshots(nb: any): Array<{
     cell_id: string;
     cell_index: number;
     template_cell_key?: string;
+    cell_type?: string;
+    source_editable?: boolean;
     source: string;
   }> {
     const templateCells =
@@ -599,7 +620,8 @@ export class FocusChangeAutoSaveTracker {
               : `position_${index + 1}`,
           cell_index: index + 1,
           template_cell_key: key,
-          source
+          source,
+          ...this.getSnapshotCellDetails(content)
         };
       })
       .filter(
@@ -609,6 +631,8 @@ export class FocusChangeAutoSaveTracker {
           cell_id: string;
           cell_index: number;
           template_cell_key?: string;
+          cell_type?: string;
+          source_editable?: boolean;
           source: string;
         } => cell !== null
       );
@@ -762,6 +786,8 @@ export class FocusChangeAutoSaveTracker {
         cell_id: string;
         cell_index: number;
         template_cell_key?: string;
+        cell_type?: string;
+        source_editable?: boolean;
         source: string;
       }> = [];
       let baselineCellSnapshots: typeof currentCellSnapshots = [];
@@ -783,7 +809,8 @@ export class FocusChangeAutoSaveTracker {
                       : `position_${index + 1}`,
                   cell_index: index + 1,
                   template_cell_key: this.getSnapshotTemplateCellKey(cell),
-                  source
+                  source,
+                  ...this.getSnapshotCellDetails(cell)
                 };
               }
               return null;
@@ -795,6 +822,8 @@ export class FocusChangeAutoSaveTracker {
                 cell_id: string;
                 cell_index: number;
                 template_cell_key?: string;
+                cell_type?: string;
+                source_editable?: boolean;
                 source: string;
               } => cell !== null
             );
