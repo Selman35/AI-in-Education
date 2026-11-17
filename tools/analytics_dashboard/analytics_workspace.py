@@ -30,6 +30,8 @@ REPORT_FILENAMES = {
     "idle_events": "idle_events.csv",
     "active_sessions": "active_sessions.csv",
     "clipboard_events": "clipboard_events.csv",
+    "error_recovery_events": "error_recovery_events.csv",
+    "solution_growth_events": "solution_growth_events.csv",
 }
 MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
 CELL_METRIC_SUFFIXES = tuple(
@@ -38,6 +40,21 @@ CELL_METRIC_SUFFIXES = tuple(
             "char_diff_added_characters",
             "char_diff_removed_characters",
             "char_diff_net_character_change",
+            "revision_added_characters",
+            "revision_removed_characters",
+            "revision_ratio",
+            "revision_changed_save_count",
+            "error_episode_count",
+            "recovered_error_episode_count",
+            "error_recovery_rate",
+            "median_error_recovery_seconds",
+            "time_to_first_action_seconds",
+            "time_to_first_execution_seconds",
+            "execution_before_edit_count",
+            "execution_before_edit_ratio",
+            "testing_frequency_per_working_minute",
+            "max_consecutive_errors",
+            "task_revisit_count",
             "clipboard_lengths",
             "clipboard_events",
             "total_duration",
@@ -86,6 +103,21 @@ OVERALL_ANALYTICS_COLUMNS = {
     "char_diff_added_characters",
     "char_diff_removed_characters",
     "char_diff_net_character_change",
+    "revision_added_characters",
+    "revision_removed_characters",
+    "revision_ratio",
+    "revision_changed_save_count",
+    "error_episode_count",
+    "recovered_error_episode_count",
+    "error_recovery_rate",
+    "median_error_recovery_seconds",
+    "median_time_to_first_code_action_seconds",
+    "median_time_to_first_code_execution_seconds",
+    "execution_before_edit_count",
+    "execution_before_edit_ratio",
+    "testing_frequency_per_working_minute",
+    "max_consecutive_errors",
+    "task_revisit_count",
 }
 
 
@@ -484,6 +516,7 @@ def available_cell_labels(reports: Mapping[str, pd.DataFrame]) -> list[str]:
     for report_name, cell_columns in {
         "cell_execution_summary": ("cell",),
         "clipboard_events": ("cell",),
+        "error_recovery_events": ("cell",),
         "idle_events": ("start_cell", "next_cell"),
         "active_sessions": ("start_cell", "end_cell"),
     }.items():
@@ -513,7 +546,7 @@ def filter_reports_to_cells(
             frame = frame.drop(columns=hidden_columns)
         elif report_name == "cell_mapping" and "cell_label" in frame.columns:
             frame = frame[frame["cell_label"].isin(included)]
-        elif report_name in {"cell_execution_summary", "clipboard_events"} and "cell" in frame.columns:
+        elif report_name in {"cell_execution_summary", "clipboard_events", "error_recovery_events"} and "cell" in frame.columns:
             frame = frame[frame["cell"].isin(included)]
         elif report_name == "idle_events" and "start_cell" in frame.columns:
             frame = frame[frame["start_cell"].isin(included)]

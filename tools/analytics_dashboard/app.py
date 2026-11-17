@@ -277,6 +277,34 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame], time_unit: st
                 )
 
     clipboard = reports.get("clipboard_events")
+    growth = reports.get("solution_growth_events")
+    if growth is not None and {"student", "timestamp", "code_character_count"}.issubset(growth.columns):
+        data = growth.copy()
+        data["timestamp"] = pd.to_datetime(data["timestamp"], errors="coerce")
+        data["code_character_count"] = pd.to_numeric(data["code_character_count"], errors="coerce")
+        data = data.dropna(subset=["timestamp", "code_character_count"])
+        if not data.empty:
+            st.subheader("Solution growth over time", icon=":material/show_chart:")
+            chart = (
+                alt.Chart(data, title="Editable code growth over time")
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("timestamp:T", title="Save time"),
+                    y=alt.Y("code_character_count:Q", title="Characters in editable code"),
+                    color=alt.Color("student:N", title="Participant"),
+                    tooltip=["student:N", "timestamp:T", "code_character_count:Q", "code_line_count:Q"],
+                )
+                .interactive()
+            )
+            with st.container(border=True):
+                st.altair_chart(chart, alt="Editable code character count over saved snapshots")
+                render_save_chart_button(
+                    st, chart, data, title="Editable code growth over time",
+                    caption="Character count in student-editable code at each saved snapshot.",
+                    chart_type="Line", time_unit=time_unit,
+                    key="save_chart_preset_solution_growth",
+                )
+
     if clipboard is not None and {"student", "event", "character_length"}.issubset(clipboard.columns):
         data = clipboard.copy()
         data["character_length"] = pd.to_numeric(data["character_length"], errors="coerce")
@@ -313,7 +341,15 @@ def render_preset_views(st: Any, reports: dict[str, pd.DataFrame], time_unit: st
 def render_event_tables(st: Any, reports: dict[str, pd.DataFrame]) -> None:
     available = [
         name
-        for name in ("active_sessions", "idle_events", "cell_execution_summary", "clipboard_events", "cell_mapping")
+        for name in (
+            "active_sessions",
+            "idle_events",
+            "cell_execution_summary",
+            "clipboard_events",
+            "error_recovery_events",
+            "solution_growth_events",
+            "cell_mapping",
+        )
         if name in reports
     ]
     if not available:

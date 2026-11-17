@@ -165,6 +165,14 @@ class AnalyticsDashboardStreamlitTests(unittest.TestCase):
                 "cell_execution_summary": pd.DataFrame(
                     {"student": ["aaa101__pilot"], "cell": ["task_1_code"], "count": [4]}
                 ),
+                "error_recovery_events": pd.DataFrame(
+                    {
+                        "student": ["aaa101__pilot"],
+                        "cell": ["task_1_code"],
+                        "recovered": [True],
+                        "closure_reason": ["recovered_after_edit"],
+                    }
+                ),
             },
             plots={"working_time.png": b"png"},
             warnings=(),

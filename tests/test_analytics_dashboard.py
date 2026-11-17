@@ -292,6 +292,8 @@ class AnalyticsWorkspaceTests(unittest.TestCase):
                 "idle_events",
                 "active_sessions",
                 "clipboard_events",
+                "error_recovery_events",
+                "solution_growth_events",
             },
         )
         self.assertEqual(len(result.reports["student_analytics"]), 1)
